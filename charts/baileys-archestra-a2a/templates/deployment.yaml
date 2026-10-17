@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "bridge.fullname" . }}
+  labels:
+    {{- include "bridge.labels" . | nindent 4 }}
+spec:
+  replicas: 1 # one WhatsApp session can only be driven by one process
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "bridge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if not .Values.archestra.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.caBundle.pem }}
+        checksum/ca: {{ include (print $.Template.BasePath "/configmap-ca.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "bridge.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          tty: true # renders the pairing QR code cleanly in `kubectl logs`
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: ARCHESTRA_URL
+              value: {{ required "archestra.url is required" .Values.archestra.url | quote }}
+            - name: ARCHESTRA_AGENT_ID
+              value: {{ required "archestra.agentId is required" .Values.archestra.agentId | quote }}
+            - name: ARCHESTRA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bridge.secretName" . }}
+                  key: {{ .Values.archestra.existingSecretKey }}
+            - name: ALLOWED_NUMBERS
+              value: {{ join "," .Values.allowedNumbers | quote }}
+            - name: DATA_DIR
+              value: /data
+            - name: AGENT_TIMEOUT_MS
+              value: {{ .Values.agentTimeoutMs | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: MEDIA_TYPES
+              value: {{ join "," .Values.media.types | quote }}
+            - name: MAX_MEDIA_MB
+              value: {{ .Values.media.maxMb | quote }}
+            - name: MEDIA_INLINE
+              value: {{ .Values.media.inline | quote }}
+            {{- if include "bridge.hasCaBundle" . }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /certs/{{ .Values.caBundle.key }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "bridge.hasCaBundle" . }}
+            - name: ca
+              mountPath: /certs
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "bridge.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.caBundle.existingSecret }}
+        - name: ca
+          secret:
+            secretName: {{ .Values.caBundle.existingSecret }}
+        {{- else if .Values.caBundle.existingConfigMap }}
+        - name: ca
+          configMap:
+            name: {{ .Values.caBundle.existingConfigMap }}
+        {{- else if .Values.caBundle.pem }}
+        - name: ca
+          configMap:
+            name: {{ include "bridge.fullname" . }}-ca
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

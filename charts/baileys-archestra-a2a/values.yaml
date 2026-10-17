@@ -1,0 +1,86 @@
+# The bridge holds one WhatsApp linked-device session, so it always runs as a single
+# replica with the Recreate strategy (two pods on one session would kick each other off).
+
+image:
+  repository: ghcr.io/pushm0v/baileys-archestra-a2a
+  tag: "" # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+archestra:
+  # Backend URL (no trailing slash), e.g. http://archestra.archestra.svc:9000 or https://archestra.example.com
+  url: ""
+  # Agent to invoke (Agent Triggers > Webhook / A2A shows the agent ID)
+  agentId: ""
+  # Bearer token. Ignored when existingSecret is set.
+  token: ""
+  # Use a Secret you manage instead of `token`
+  existingSecret: ""
+  existingSecretKey: token
+
+# Phone numbers (country code, no +) allowed to talk to the agent. Empty allows anyone.
+allowedNumbers: []
+
+agentTimeoutMs: 300000
+# pino log level for Baileys: fatal | error | warn | info | debug | trace
+logLevel: warn
+
+media:
+  # Attachment kinds to forward: image, document, audio, video, sticker
+  types: [image, document]
+  maxMb: 10
+  # auto | always | never (see README "Inline file support")
+  inline: auto
+
+# Extra CA certificates (PEM) to trust, for an Archestra behind a private/company CA.
+# Either paste the PEM in `pem`, or point at an existing ConfigMap/Secret key.
+caBundle:
+  pem: ""
+  existingConfigMap: ""
+  existingSecret: ""
+  key: ca.pem
+
+# Stores the WhatsApp session (/data/auth) and the chat -> contextId map.
+# Without persistence every pod restart needs a new QR scan.
+persistence:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+  annotations: {}
+
+extraEnv: []
+#  - name: FOO
+#    value: bar
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000 # the `node` user in node:22-alpine
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
