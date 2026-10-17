@@ -28,12 +28,20 @@ export function createAgentClient({ endpoint, token, contextFile, timeoutMs, med
     const message = { messageId: randomUUID(), role: 'ROLE_USER', parts }
     if (contexts[chatId]) message.contextId = contexts[chatId]
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'SendMessage', params: { message } }),
-      signal: AbortSignal.timeout(timeoutMs), // agent runs synchronously; tool-heavy runs can be slow
-    })
+    let res
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'SendMessage', params: { message } }),
+        signal: AbortSignal.timeout(timeoutMs), // agent runs synchronously; tool-heavy runs can be slow
+      })
+    } catch (err) {
+      // fetch only says "fetch failed"; the reason (DNS, TLS, refused connection) is in err.cause
+      const cause = err.cause?.code || err.cause?.message
+      if (cause) err.message = `${err.message} (${cause})`
+      throw err
+    }
     const text = await res.text()
     let body = null
     try { body = JSON.parse(text) } catch {}

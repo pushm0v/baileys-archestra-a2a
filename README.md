@@ -97,6 +97,14 @@ With option A, open <http://localhost:3000>, create the agent and a token, put t
 
 The WhatsApp session and conversation map live in the `bridge-data` volume, so restarts and image rebuilds don't need a new QR scan. To re-pair, run `docker compose down` then `docker volume rm <project>_bridge-data`.
 
+### Archestra behind a private CA
+
+If the bridge logs `agent call failed: fetch failed (UNABLE_TO_GET_ISSUER_CERT_LOCALLY)` or `(SELF_SIGNED_CERT_IN_CHAIN)`, Archestra's certificate is signed by a CA the container doesn't trust (the host may trust it through its own keychain). Put the CA certificate(s) in PEM form in `./certs`, set `NODE_EXTRA_CA_CERTS=/certs/ca.pem` in `.env`, then run `docker compose up -d bridge`. On macOS you can export a CA from Keychain with:
+
+```bash
+mkdir -p certs && security find-certificate -a -c "<CA common name>" -p > certs/ca.pem
+```
+
 Updating after a `git pull`:
 
 ```bash

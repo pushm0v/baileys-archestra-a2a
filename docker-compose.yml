@@ -16,6 +16,7 @@ services:
       - "host.docker.internal:host-gateway" # reach an Archestra running on the Docker host (Linux)
     volumes:
       - bridge-data:/data
+      - ./certs:/certs:ro # extra CA certificates; see NODE_EXTRA_CA_CERTS in .env.example
     tty: true # renders the pairing QR code cleanly in `docker compose logs`
 
   archestra:
