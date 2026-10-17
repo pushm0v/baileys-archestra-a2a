@@ -59,10 +59,16 @@ const enqueue = (jid, fn) => {
   return next
 }
 
-// Chats may be addressed by LID (@lid) instead of phone number; prefer the phone-number alias when present
-function senderNumber(key) {
+// Chats may be addressed by LID (@lid) instead of phone number; resolve to the phone number when possible
+const userOf = jid => jid.split('@')[0].split(':')[0]
+async function senderNumber(sock, key) {
   const pn = [key.remoteJidAlt, key.senderPn, key.remoteJid].find(j => j?.endsWith('@s.whatsapp.net'))
-  return (pn || key.remoteJid).split('@')[0]
+  if (pn) return userOf(pn)
+  if (key.remoteJid?.endsWith('@lid')) {
+    const mapped = await sock.signalRepository?.lidMapping?.getPNForLID(key.remoteJid).catch(() => null)
+    if (mapped) return userOf(mapped)
+  }
+  return userOf(key.remoteJid)
 }
 
 async function handleMessage(sock, msg, info) {
@@ -79,10 +85,14 @@ async function handleMessage(sock, msg, info) {
     if (!parts.length) {
       reply = mediaNotice
     } else {
+      const started = Date.now()
+      console.log(`${jid}: asking agent`)
       const { answer, notice } = await agent.ask(jid, parts)
+      console.log(`${jid}: agent replied in ${((Date.now() - started) / 1000).toFixed(1)}s`)
       reply = [mediaNotice, notice, answer].filter(Boolean).join('\n\n')
     }
   } catch (e) {
+    console.error(`${jid}: agent call failed:`, e.message)
     reply = `Agent error: ${e.message}`
   }
   await sock.sendPresenceUpdate('paused', jid)
@@ -104,18 +114,23 @@ async function start() {
     }
   })
 
-  sock.ev.on('messages.upsert', ({ messages, type }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return // skip history sync
     for (const msg of messages) {
       const jid = msg.key.remoteJid
       if (msg.key.fromMe || !jid || jid.endsWith('@g.us') || jid.endsWith('@newsletter') || jid === 'status@broadcast') continue
 
       const info = inspectMessage(msg)
-      if (!info.text && !info.media) continue
+      if (!info.text && !info.media) { console.log(`${jid}: ignored message with no text or supported media`); continue }
 
       // Allowlist: every message spends your Archestra token, so gate who can reach the agent
-      if (ALLOWED.size && !ALLOWED.has(senderNumber(msg.key))) continue
+      const number = await senderNumber(sock, msg.key)
+      if (ALLOWED.size && !ALLOWED.has(number)) {
+        console.log(`${jid}: dropped, sender ${number} is not in ALLOWED_NUMBERS`)
+        continue
+      }
 
+      console.log(`${jid}: message from ${number}`)
       enqueue(jid, () => handleMessage(sock, msg, info))
     }
   })
