@@ -59,7 +59,7 @@ Send the linked number a message from an allowlisted phone and the agent replies
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
-| `ARCHESTRA_URL` | yes | | Base URL of the Archestra platform, e.g. `http://localhost:3000` |
+| `ARCHESTRA_URL` | yes | | Base URL of the Archestra platform, backend port 9000, e.g. `http://archestra:9000` |
 | `ARCHESTRA_AGENT_ID` | yes | | ID of the agent to invoke |
 | `ARCHESTRA_TOKEN` | yes | | Archestra token with access to the agent |
 | `ALLOWED_NUMBERS` | no | empty (anyone) | Comma-separated phone numbers with country code, no `+` |
@@ -70,14 +70,38 @@ Send the linked number a message from an allowlisted phone and the agent replies
 | `MAX_MEDIA_MB` | no | `10` | Largest attachment to forward |
 | `MEDIA_INLINE` | no | `auto` | `auto`, `always` or `never`. See [Media forwarding](#media-forwarding) |
 
-## Docker
+## Docker Compose
+
+`docker-compose.yml` runs the bridge, and optionally Archestra itself.
 
 ```bash
-docker build -t baileys-archestra-a2a .
-docker run -it --env-file .env -v baileys-data:/data baileys-archestra-a2a
+cp .env.example .env        # set ARCHESTRA_AGENT_ID, ARCHESTRA_TOKEN, ALLOWED_NUMBERS, ARCHESTRA_URL
+
+# Option A: bridge + Archestra on this host
+docker compose --profile archestra up -d
+# Option B: bridge only, pointing at an existing Archestra
+docker compose up -d
+
+docker compose logs -f bridge   # scan the QR code: WhatsApp > Linked devices > Link a device
 ```
 
-Run interactively (`-it`) the first time so you can scan the QR code. If Archestra runs in Docker on the same host, put both containers on one network and point `ARCHESTRA_URL` at the Archestra container name.
+Set `ARCHESTRA_URL` to Archestra's **backend** (port 9000, where `/v2/a2a` lives), not the UI on 3000:
+
+| Where Archestra runs | `ARCHESTRA_URL` |
+| --- | --- |
+| Same compose project (`--profile archestra`) | `http://archestra:9000` |
+| Docker on the same host, separate project | `http://host.docker.internal:9000` |
+| Remote server behind a reverse proxy | `https://archestra.example.com` (with `/v2` routed to port 9000) |
+
+With option A, open <http://localhost:3000>, create the agent and a token, put them in `.env`, then run `docker compose up -d bridge` to restart the bridge with the new values.
+
+The WhatsApp session and conversation map live in the `bridge-data` volume, so restarts and image rebuilds don't need a new QR scan. To re-pair, run `docker compose down` then `docker volume rm <project>_bridge-data`.
+
+Updating after a `git pull`:
+
+```bash
+docker compose build bridge && docker compose up -d bridge
+```
 
 ## How it works
 

@@ -1,0 +1,38 @@
+# Bridge only (Archestra runs elsewhere):   docker compose up -d
+# Bridge + Archestra on this host:          docker compose --profile archestra up -d
+#
+# First run: watch the logs and scan the QR code with WhatsApp > Linked devices
+#   docker compose logs -f bridge
+
+services:
+  bridge:
+    build: .
+    image: baileys-archestra-a2a:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # reach an Archestra running on the Docker host (Linux)
+    volumes:
+      - bridge-data:/data
+    tty: true # renders the pairing QR code cleanly in `docker compose logs`
+
+  archestra:
+    profiles: ["archestra"]
+    image: archestra/platform:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000" # UI
+      - "127.0.0.1:9000:9000" # API (LLM/MCP proxy, A2A)
+    environment:
+      ARCHESTRA_QUICKSTART: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock # lets quickstart run MCP servers
+      - archestra-postgres-data:/var/lib/postgresql/data
+      - archestra-app-data:/app/data
+
+volumes:
+  bridge-data:
+  archestra-postgres-data:
+  archestra-app-data:
