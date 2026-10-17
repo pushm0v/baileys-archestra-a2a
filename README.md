@@ -66,6 +66,9 @@ Send the linked number a message from an allowlisted phone and the agent replies
 | `DATA_DIR` | no | `./data` | Stores WhatsApp session (`auth/`) and the chat → `contextId` map |
 | `AGENT_TIMEOUT_MS` | no | `300000` | Max wait for a synchronous agent reply |
 | `LOG_LEVEL` | no | `warn` | Baileys log level |
+| `MEDIA_TYPES` | no | `image,document` | Attachment kinds to forward: `image`, `document`, `audio`, `video`, `sticker` |
+| `MAX_MEDIA_MB` | no | `10` | Largest attachment to forward |
+| `MEDIA_INLINE` | no | `auto` | `auto`, `always` or `never`. See [Media forwarding](#media-forwarding) |
 
 ## Docker
 
@@ -102,7 +105,59 @@ Run interactively (`-it`) the first time so you can scan the QR code. If Archest
 
 **Approvals.** If a tool call hits an Archestra policy that requires human approval, the response is a `task` in `TASK_STATE_INPUT_REQUIRED` instead of a message. The bridge tells the user approval is pending. Approve it in Archestra, or extend the bridge to send `metadata.taskOps.approvalDecisions` back.
 
-**Filtering.** Only new 1:1 text messages are forwarded. Groups, channels, status updates, history sync and your own messages are ignored. Image and video captions are forwarded as text; media itself is not.
+**Filtering.** Only new 1:1 messages are forwarded. Groups, channels, status updates, history sync and your own messages are ignored.
+
+## Media forwarding
+
+Attachments are downloaded with Baileys and sent to the agent alongside the caption:
+
+```mermaid
+flowchart TD
+  M[Incoming message] --> K{Kind in<br/>MEDIA_TYPES?}
+  K -->|no| C[Send caption only<br/>+ notice to user]
+  K -->|yes| SZ{Size within<br/>MAX_MEDIA_MB?}
+  SZ -->|no| N[Skip file<br/>+ notice to user]
+  SZ -->|yes| TL{Text-like file<br/>under 200 KB?}
+  TL -->|yes| T[Inline contents<br/>as a text part]
+  TL -->|no| IN{Inline files<br/>enabled?}
+  IN -->|no| D[Describe file<br/>as a text part]
+  IN -->|yes| F[A2A file part<br/>raw + mediaType + filename]
+  F --> A[[Archestra]]
+  A -->|rejected| R[Retry with file<br/>described as text]
+  T --> A
+  D --> A
+```
+
+- **Captions** become the text part. With no caption, the agent gets a line like `(The user sent an image: image-ABC.jpg)`.
+- **Text-like files** (`text/*`, JSON, XML, CSV, YAML) under 200 KB are inlined as text, which every model can read.
+- **Other files** (images, PDFs, audio, video) are sent as A2A 1.0 file parts, with bytes base64-encoded in JSON:
+
+  ```json
+  { "raw": "<base64>", "mediaType": "image/jpeg", "filename": "image-ABC.jpg" }
+  ```
+
+- Wrapped messages (view-once, disappearing, document-with-caption) are unwrapped first. Voice notes arrive as `audio/ogg`.
+- Whether the model can actually use an image, PDF or audio file depends on the LLM behind your Archestra agent.
+
+### Inline file support and `MEDIA_INLINE`
+
+Archestra's agent runtime accepts file parts (`raw` + `mediaType` + `filename`), but at the time of writing its v2 HTTP endpoint validates `raw` as a byte array, which plain JSON can't carry. Depending on your Archestra version, a file part over HTTP may be rejected as invalid params. The bridge handles this:
+
+| Mode | Behaviour |
+| --- | --- |
+| `auto` (default) | Tries a file part. If Archestra rejects it (HTTP 400/422 or JSON-RPC `-32600`/`-32602`), resends with the file described as text, tells the user, and describes files as text for the rest of the process lifetime. A 413 (too large) falls back for that message only. |
+| `always` | Tries a file part every time, falling back per message. |
+| `never` | Never sends bytes. Binary files are described as text, and only text-like files are inlined. |
+
+If your Archestra version accepts base64 `raw` over HTTP, `auto` simply keeps sending files. Archestra's default request body limit is 70 MB (`ARCHESTRA_API_BODY_LIMIT`); base64 adds about a third to file size.
+
+## Tests
+
+```bash
+npm test
+```
+
+The tests cover message parsing, media part building and the Archestra client (context memory and file-part fallback) against a mock A2A server. They don't need WhatsApp or a real Archestra.
 
 ## Caveats
 
@@ -113,7 +168,8 @@ Run interactively (`-it`) the first time so you can scan the QR code. If Archest
 
 ## Ideas for extension
 
-- Forward images as A2A file parts using Baileys `downloadMediaMessage`
+- Transcribe voice notes before sending, for models without audio input
+- Send the agent's file parts back to WhatsApp as media
 - Approve or reject pending tool calls from WhatsApp
 - Route different numbers or keywords to different agents
 - Move `contexts.json` to Redis or Postgres for multi-instance deployments
