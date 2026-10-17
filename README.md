@@ -95,7 +95,7 @@ Set `ARCHESTRA_URL` to Archestra's **backend** (port 9000, where `/v2/a2a` lives
 
 With option A, open <http://localhost:3000>, create the agent and a token, put them in `.env`, then run `docker compose up -d bridge` to restart the bridge with the new values.
 
-The WhatsApp session and conversation map live in the `bridge-data` volume, so restarts and image rebuilds don't need a new QR scan. To re-pair, run `docker compose down` then `docker volume rm <project>_bridge-data`.
+The WhatsApp session and conversation map live in the `bridge-data` volume, so restarts and image rebuilds don't need a new QR scan. To re-pair, run `docker compose down` then `docker volume rm <project>_bridge-data`. To keep this data in a host folder instead, set `BRIDGE_DATA=./data` in `.env` (re-pair by deleting `./data/auth`).
 
 ### Archestra behind a private CA
 
