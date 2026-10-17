@@ -1,0 +1,17 @@
+The bridge is forwarding WhatsApp messages to:
+  {{ .Values.archestra.url }}/v2/a2a/{{ .Values.archestra.agentId }}
+
+First run: scan the pairing QR code from the logs with WhatsApp > Linked devices > Link a device
+  kubectl logs -f -n {{ .Release.Namespace }} deploy/{{ include "bridge.fullname" . }}
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled, so every pod restart needs a new QR scan.
+{{- end }}
+{{- if not .Values.allowedNumbers }}
+
+WARNING: allowedNumbers is empty, so anyone who messages this number can reach the agent.
+{{- end }}
+
+To re-pair, delete the session and restart:
+  kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "bridge.fullname" . }} -- rm -rf /data/auth
+  kubectl rollout restart -n {{ .Release.Namespace }} deploy/{{ include "bridge.fullname" . }}

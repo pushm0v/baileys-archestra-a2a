@@ -111,6 +111,27 @@ Updating after a `git pull`:
 docker compose build bridge && docker compose up -d bridge
 ```
 
+## Kubernetes (Helm)
+
+The chart in `charts/baileys-archestra-a2a` runs the bridge as a single-replica Deployment (one WhatsApp session can only be driven by one process) with a PersistentVolumeClaim for the session. Build and push the image to a registry your cluster can pull from, then:
+
+```bash
+helm install whatsapp charts/baileys-archestra-a2a -n whatsapp --create-namespace \
+  --set image.repository=<registry>/baileys-archestra-a2a --set image.tag=<tag> \
+  --set archestra.url=https://archestra.example.com \
+  --set archestra.agentId=<agent-id> \
+  --set archestra.token=<token> \
+  --set 'allowedNumbers={6281234567890}'
+
+kubectl logs -f -n whatsapp deploy/whatsapp-baileys-archestra-a2a   # scan the QR code
+```
+
+- Token from a Secret you manage: `--set archestra.existingSecret=<name>` (key `token`, or set `archestra.existingSecretKey`).
+- Archestra behind a private CA: `--set-file caBundle.pem=certs/ca.pem`, or reference an existing ConfigMap/Secret with `caBundle.existingConfigMap` / `caBundle.existingSecret`.
+- The PVC is kept on `helm uninstall` (deleting it logs the session out). To re-pair, `rm -rf /data/auth` in the pod and restart it.
+
+See `charts/baileys-archestra-a2a/values.yaml` for all options.
+
 ## How it works
 
 **Calling the agent.** Each message becomes an A2A JSON-RPC request:

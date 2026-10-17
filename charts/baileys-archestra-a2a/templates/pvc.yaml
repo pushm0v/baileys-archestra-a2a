@@ -1,0 +1,22 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "bridge.fullname" . }}
+  labels:
+    {{- include "bridge.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep # deleting it logs the WhatsApp session out
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ if eq . "-" }}""{{ else }}{{ . }}{{ end }}
+  {{- end }}
+{{- end }}
