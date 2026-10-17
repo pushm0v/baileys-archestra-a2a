@@ -1,0 +1,20 @@
+{
+  "name": "baileys-archestra-a2a",
+  "version": "0.1.0",
+  "description": "Bridge WhatsApp (via Baileys) to Archestra AI agents over the A2A protocol",
+  "type": "module",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": ["whatsapp", "baileys", "archestra", "a2a", "ai-agent"],
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "pino": "^10.4.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
