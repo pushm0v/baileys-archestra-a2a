@@ -2,8 +2,8 @@ apiVersion: v2
 name: baileys-archestra-a2a
 description: Bridge WhatsApp (via Baileys) to Archestra AI agents over the A2A protocol
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 keywords: [whatsapp, baileys, archestra, a2a, ai-agent]
 sources:
   - https://github.com/pushm0v/baileys-archestra-a2a

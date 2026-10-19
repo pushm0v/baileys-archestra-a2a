@@ -1,0 +1,11 @@
+{{- if .Values.routes }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "bridge.fullname" . }}-routes
+  labels:
+    {{- include "bridge.labels" . | nindent 4 }}
+data:
+  routes.json: |
+    {{- toPrettyJson .Values.routes | nindent 4 }}
+{{- end }}

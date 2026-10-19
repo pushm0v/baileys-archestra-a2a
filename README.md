@@ -9,11 +9,14 @@ Archestra has no native WhatsApp channel, but every agent can be invoked through
 ```mermaid
 flowchart TD
   U([WhatsApp user]) -->|text message| B[Baileys socket<br/>messages.upsert]
-  B --> F{type notify, 1:1 chat,<br/>not fromMe?}
+  B --> F{type notify,<br/>not fromMe?}
   F -->|no| X([Ignore])
-  F -->|yes| A{Number in<br/>allowlist?}
+  F -->|1:1 chat| A{Number has a route<br/>or is in allowlist?}
   A -->|no| X
   A -->|yes| Q[Per-chat queue]
+  F -->|group| G{Group has a route<br/>and bot @mentioned?}
+  G -->|no| X
+  G -->|yes| Q
   Q --> R{Text is /reset?}
   R -->|yes| D[Delete contextId] --> S
   R -->|no| C[Look up contextId<br/>for chat JID]
@@ -69,6 +72,42 @@ Send the linked number a message from an allowlisted phone and the agent replies
 | `MEDIA_TYPES` | no | `image,document` | Attachment kinds to forward: `image`, `document`, `audio`, `video`, `sticker` |
 | `MAX_MEDIA_MB` | no | `10` | Largest attachment to forward |
 | `MEDIA_INLINE` | no | `auto` | `auto`, `always` or `never`. See [Media forwarding](#media-forwarding) |
+| `ROUTES_FILE` | no | `$DATA_DIR/routes.json` | Group / number → agent routes. See [Groups and routing](#groups-and-routing) |
+
+## Groups and routing
+
+Each WhatsApp group can be bound to its own Archestra agent with a routes file (JSON). Groups without a route are ignored, and direct chats without a route keep going to `ARCHESTRA_AGENT_ID`.
+
+```json
+{
+  "120363041234567890@g.us": { "name": "ops", "agentId": "5650c819-345a-4d05-82f7-b901ba5dba1f" },
+  "120363049876543210@g.us": {
+    "name": "sales",
+    "agentId": "9a1b…",
+    "url": "https://other-archestra.example.com",
+    "token": "env:SALES_TOKEN",
+    "trigger": "mention",
+    "allowedNumbers": ["6281234567890"]
+  },
+  "6281234567890": { "agentId": "…" }
+}
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| key | | Group JID (`…@g.us`), or a phone number for direct chats from that number |
+| `agentId` | required | Agent to invoke |
+| `name` | the key | Label used in logs |
+| `url` | `ARCHESTRA_URL` | Archestra backend for this agent |
+| `token` | `ARCHESTRA_TOKEN` | Token for this agent. `env:NAME` reads it from environment variable `NAME` |
+| `trigger` | `mention` | Groups only. `mention`: answer only when the bot is @mentioned. `all`: answer every message |
+| `allowedNumbers` | any member | Groups only. Members allowed to use the agent |
+
+- **Passive by default.** In a group the bot only answers messages that @mention it; the mention itself is stripped before the text goes to the agent.
+- **Finding a group's JID.** The first message from an unmapped group logs `unmapped group 1203…@g.us "Group name"`. You can also send `@bot /chatid` in the group (or `/chatid` in a direct chat) and the bot replies with the key to use.
+- **One conversation per group.** Members share the group's Archestra conversation, and each message is prefixed with the sender (`[Budi (62812…)]: …`) so the agent knows who is talking. `@bot /reset` starts a new one.
+- **Access.** A routed group is open to all its members unless `allowedNumbers` is set; `ALLOWED_NUMBERS` applies to direct chats only. A route for a phone number also allows that number.
+- Routes are read at startup; restart the bridge after changing them. With Docker Compose and `BRIDGE_DATA=./data`, put the file at `./data/routes.json`. With Helm, set `routes:` in your values.
 
 ## Docker Compose
 
@@ -216,7 +255,7 @@ The tests cover message parsing, media part building and the Archestra client (c
 
 - Baileys is an unofficial WhatsApp Web client. Automating a personal account may violate WhatsApp's Terms of Service and can get the number banned. Use a dedicated number.
 - Don't run Baileys on a number that is also connected to the official WhatsApp Business Cloud API; incoming messages may fail to decrypt.
-- All messages run under one Archestra token. Keep `ALLOWED_NUMBERS` set so strangers can't use your agent or your LLM budget.
+- Messages run under your Archestra token(s). Keep `ALLOWED_NUMBERS` set so strangers can't use your agent or your LLM budget, and only route groups whose members you trust (or set `allowedNumbers` on the route).
 - Agent calls are synchronous. Very long agent runs can hit `AGENT_TIMEOUT_MS`.
 
 ## Ideas for extension
@@ -224,7 +263,8 @@ The tests cover message parsing, media part building and the Archestra client (c
 - Transcribe voice notes before sending, for models without audio input
 - Send the agent's file parts back to WhatsApp as media
 - Approve or reject pending tool calls from WhatsApp
-- Route different numbers or keywords to different agents
+- Route by keyword (e.g. `/sales …`) to different agents
+- Reload the routes file without a restart
 - Move `contexts.json` to Redis or Postgres for multi-instance deployments
 
 ## References

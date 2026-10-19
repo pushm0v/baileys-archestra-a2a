@@ -20,6 +20,9 @@ spec:
         {{- if .Values.caBundle.pem }}
         checksum/ca: {{ include (print $.Template.BasePath "/configmap-ca.yaml") . | sha256sum }}
         {{- end }}
+        {{- if .Values.routes }}
+        checksum/routes: {{ include (print $.Template.BasePath "/configmap-routes.yaml") . | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -71,6 +74,10 @@ spec:
             - name: NODE_EXTRA_CA_CERTS
               value: /certs/{{ .Values.caBundle.key }}
             {{- end }}
+            {{- if .Values.routes }}
+            - name: ROUTES_FILE
+              value: /config/routes.json
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -82,6 +89,11 @@ spec:
             {{- if include "bridge.hasCaBundle" . }}
             - name: ca
               mountPath: /certs
+              readOnly: true
+            {{- end }}
+            {{- if .Values.routes }}
+            - name: routes
+              mountPath: /config
               readOnly: true
             {{- end }}
           resources:
@@ -108,6 +120,11 @@ spec:
         - name: ca
           configMap:
             name: {{ include "bridge.fullname" . }}-ca
+        {{- end }}
+        {{- if .Values.routes }}
+        - name: routes
+          configMap:
+            name: {{ include "bridge.fullname" . }}-routes
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

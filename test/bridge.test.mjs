@@ -8,7 +8,7 @@ const key = { id: 'MSG1', remoteJid: '6281@s.whatsapp.net' }
 const quiet = { warn() {} }
 
 test('inspectMessage reads plain text', () => {
-  assert.deepEqual(inspectMessage({ key, message: { conversation: 'hi' } }), { text: 'hi', media: null })
+  assert.deepEqual(inspectMessage({ key, message: { conversation: 'hi' } }), { text: 'hi', media: null, mentions: [] })
 })
 
 test('inspectMessage unwraps document-with-caption and ephemeral wrappers', () => {
