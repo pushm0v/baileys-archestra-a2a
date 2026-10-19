@@ -22,7 +22,8 @@ archestra:
   existingSecretKey: token
 
 # Phone numbers (country code, no +) allowed to talk to the default agent in direct chats.
-# Empty allows anyone. Groups are controlled by `routes` instead.
+# Empty allows anyone. Has no effect in groups: a routed group is open to all its members
+# unless the route sets `allowedNumbers`, and groups without a route get no answers.
 allowedNumbers: []
 
 # Bind WhatsApp groups (or specific phone numbers) to their own Archestra agent.

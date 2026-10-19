@@ -65,7 +65,7 @@ Send the linked number a message from an allowlisted phone and the agent replies
 | `ARCHESTRA_URL` | yes | | Base URL of the Archestra platform, backend port 9000, e.g. `http://archestra:9000` |
 | `ARCHESTRA_AGENT_ID` | yes | | ID of the agent to invoke |
 | `ARCHESTRA_TOKEN` | yes | | Archestra token with access to the agent |
-| `ALLOWED_NUMBERS` | no | empty (anyone) | Comma-separated phone numbers with country code, no `+` |
+| `ALLOWED_NUMBERS` | no | empty (anyone) | **Direct chats only.** Comma-separated phone numbers with country code, no `+`. Has no effect in groups; see [Who can use the bot](#who-can-use-the-bot) |
 | `DATA_DIR` | no | `./data` | Stores WhatsApp session (`auth/`) and the chat → `contextId` map |
 | `AGENT_TIMEOUT_MS` | no | `300000` | Max wait for a synchronous agent reply |
 | `LOG_LEVEL` | no | `warn` | Baileys log level |
@@ -106,8 +106,33 @@ Each WhatsApp group can be bound to its own Archestra agent with a routes file (
 - **Passive by default.** In a group the bot only answers messages that @mention it; the mention itself is stripped before the text goes to the agent.
 - **Finding a group's JID.** The first message from an unmapped group logs `unmapped group 1203…@g.us "Group name"`. You can also send `@bot /chatid` in the group (or `/chatid` in a direct chat) and the bot replies with the key to use.
 - **One conversation per group.** Members share the group's Archestra conversation, and each message is prefixed with the sender (`[Budi (62812…)]: …`) so the agent knows who is talking. `@bot /reset` starts a new one.
-- **Access.** A routed group is open to all its members unless `allowedNumbers` is set; `ALLOWED_NUMBERS` applies to direct chats only. A route for a phone number also allows that number.
 - Routes are read at startup; restart the bridge after changing them. With Docker Compose and `BRIDGE_DATA=./data`, put the file at `./data/routes.json`. With Helm, set `routes:` in your values.
+
+### Who can use the bot
+
+`ALLOWED_NUMBERS` only controls **direct chats**. Groups are controlled per route in the routes file, so adding the bot to a group does not let anyone in until that group has a route, and once it has one, `ALLOWED_NUMBERS` does not apply there.
+
+| Chat | Who gets an answer |
+| --- | --- |
+| Direct chat, number has no route | Numbers in `ALLOWED_NUMBERS` (anyone, if it is empty) |
+| Direct chat, number has its own route | That number, even if it is not in `ALLOWED_NUMBERS` |
+| Group without a route | Nobody. The bot stays silent and logs the group JID once. Only `@bot /chatid` gets a reply, from any member |
+| Routed group without `allowedNumbers` | **Every member** who @mentions the bot (or every message, with `trigger: "all"`) |
+| Routed group with `allowedNumbers` | Only the listed members; others are ignored without a reply and logged as `sender X is not in allowedNumbers` |
+
+Anyone added to a routed group can use its agent on your Archestra token, so set `allowedNumbers` on routes for groups whose membership you don't control:
+
+```json
+{
+  "120363041234567890@g.us": {
+    "name": "ops",
+    "agentId": "5650c819-345a-4d05-82f7-b901ba5dba1f",
+    "allowedNumbers": ["6281234567890", "6289876543210"]
+  }
+}
+```
+
+If a listed member is still dropped, check the number in the `sender X is not in allowedNumbers` log line. When WhatsApp only shares a member's LID (a hidden ID instead of the phone number) and the bridge has no mapping for it yet, X is that long LID; add it to the list as well.
 
 ## Docker Compose
 
