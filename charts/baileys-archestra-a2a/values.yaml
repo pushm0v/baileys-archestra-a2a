@@ -21,8 +21,28 @@ archestra:
   existingSecret: ""
   existingSecretKey: token
 
-# Phone numbers (country code, no +) allowed to talk to the agent. Empty allows anyone.
+# Phone numbers (country code, no +) allowed to talk to the default agent in direct chats.
+# Empty allows anyone. Groups are controlled by `routes` instead.
 allowedNumbers: []
+
+# Bind WhatsApp groups (or specific phone numbers) to their own Archestra agent.
+# Groups without a route are ignored; the bridge logs their JID ("unmapped group …") the
+# first time they send a message, or `@bot /chatid` in the group replies with it.
+# In groups the bot only answers when @mentioned, unless trigger is "all".
+# Route tokens default to archestra.token; use "env:NAME" with extraEnv to read one from a Secret.
+routes: {}
+#  "120363041234567890@g.us":
+#    name: ops
+#    agentId: 5650c819-345a-4d05-82f7-b901ba5dba1f
+#  "120363049876543210@g.us":
+#    name: sales
+#    agentId: 9a1b...
+#    url: https://other-archestra.example.com   # default: archestra.url
+#    token: env:SALES_TOKEN                     # default: archestra.token
+#    trigger: mention                           # mention (default) | all
+#    allowedNumbers: ["6281234567890"]          # default: any group member
+#  "6281234567890":
+#    agentId: ...                               # direct chats from this number
 
 agentTimeoutMs: 300000
 # pino log level for Baileys: fatal | error | warn | info | debug | trace
@@ -54,8 +74,9 @@ persistence:
   annotations: {}
 
 extraEnv: []
-#  - name: FOO
-#    value: bar
+#  - name: SALES_TOKEN          # referenced by a route as token: env:SALES_TOKEN
+#    valueFrom:
+#      secretKeyRef: { name: sales-archestra, key: token }
 
 podAnnotations: {}
 podLabels: {}

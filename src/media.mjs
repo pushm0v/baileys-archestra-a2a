@@ -23,17 +23,18 @@ const EXT = {
 // Unwraps ephemeral / view-once / document-with-caption wrappers and reports what the message holds
 export function inspectMessage(msg) {
   const content = extractMessageContent(msg.message)
-  if (!content) return { text: null, media: null }
+  if (!content) return { text: null, media: null, mentions: [] }
   const type = getContentType(content)
   const node = content[type]
   const text = content.conversation || content.extendedTextMessage?.text || node?.caption || null
+  const mentions = node?.contextInfo?.mentionedJid || []
   const kind = KINDS[type]
-  if (!kind) return { text, media: null }
+  if (!kind) return { text, media: null, mentions }
 
   const mediaType = (node.mimetype || 'application/octet-stream').split(';')[0].trim()
   const filename = node.fileName || `${kind}-${msg.key.id}.${EXT[mediaType] || mediaType.split('/')[1] || 'bin'}`
   const size = Number(node.fileLength ?? 0)
-  return { text, media: { kind, mediaType, filename, size, voiceNote: Boolean(node.ptt) } }
+  return { text, media: { kind, mediaType, filename, size, voiceNote: Boolean(node.ptt) }, mentions }
 }
 
 /**

@@ -10,23 +10,38 @@ export class AgentError extends Error {
   get isRejectedRequest() { return [400, 413, 422].includes(this.status) || [-32600, -32602].includes(this.code) }
 }
 
+// chat -> contextId map persisted as JSON. One store is shared by all agent clients so they
+// don't overwrite each other's entries in the same file.
+export function createContextStore(file) {
+  const data = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {}
+  const save = () => file && fs.writeFileSync(file, JSON.stringify(data, null, 2))
+  return {
+    get: key => data[key],
+    set(key, value) { if (data[key] !== value) { data[key] = value; save() } },
+    delete(key) { if (key in data) { delete data[key]; save() } },
+  }
+}
+
 /**
  * @param {object} o
  * @param {string} o.endpoint   full URL of POST /v2/a2a/{agentId}
  * @param {string} o.token      Archestra bearer token
- * @param {string} o.contextFile path to persist chat -> contextId map
+ * @param {string} [o.contextFile] path to persist chat -> contextId map (ignored when `store` is given)
+ * @param {ReturnType<createContextStore>} [o.store] shared context store
+ * @param {string} [o.namespace] prefix for this client's keys in the store, so two agents never share a contextId
  * @param {number} o.timeoutMs
  * @param {'auto'|'always'|'never'} o.mediaInline
  */
-export function createAgentClient({ endpoint, token, contextFile, timeoutMs, mediaInline = 'auto', logger = console }) {
-  const contexts = contextFile && fs.existsSync(contextFile) ? JSON.parse(fs.readFileSync(contextFile, 'utf8')) : {}
-  const save = () => contextFile && fs.writeFileSync(contextFile, JSON.stringify(contexts, null, 2))
+export function createAgentClient({ endpoint, token, contextFile, store, namespace = '', timeoutMs, mediaInline = 'auto', logger = console }) {
+  const contexts = store || createContextStore(contextFile)
+  const keyOf = chatId => namespace + chatId
   // In auto mode this flips to false the first time Archestra rejects an inline file part
   let inlineFiles = mediaInline !== 'never'
 
   async function call(chatId, parts) {
     const message = { messageId: randomUUID(), role: 'ROLE_USER', parts }
-    if (contexts[chatId]) message.contextId = contexts[chatId]
+    const contextId = contexts.get(keyOf(chatId))
+    if (contextId) message.contextId = contextId
 
     let res
     try {
@@ -50,7 +65,7 @@ export function createAgentClient({ endpoint, token, contextFile, timeoutMs, med
 
     const { message: reply, task } = body.result || {}
     const ctx = reply?.contextId || task?.contextId
-    if (ctx && ctx !== contexts[chatId]) { contexts[chatId] = ctx; save() }
+    if (ctx) contexts.set(keyOf(chatId), ctx)
 
     if (task) return 'This request needs approval in Archestra before I can continue.'
     return (reply?.parts || []).map(p => p.text).filter(Boolean).join('\n') || '(no text reply)'
@@ -59,7 +74,7 @@ export function createAgentClient({ endpoint, token, contextFile, timeoutMs, med
   return {
     get inlineFiles() { return inlineFiles },
 
-    reset(chatId) { delete contexts[chatId]; save() },
+    reset(chatId) { contexts.delete(keyOf(chatId)) },
 
     // Sends parts; if Archestra rejects an inline file, retries with the file described as text
     async ask(chatId, parts) {
