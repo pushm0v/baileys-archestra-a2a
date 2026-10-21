@@ -8,7 +8,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { inspectMessage, buildParts } from './media.mjs'
 import { createAgentClient, createContextStore } from './agent.mjs'
-import { loadRoutes, botIds, isMentioned, stripMentions, userOf } from './routes.mjs'
+import { loadRoutes, parseRoutes, botIds, isMentioned, stripMentions, userOf } from './routes.mjs'
+import { reconnectDelay } from './backoff.mjs'
 
 const {
   ARCHESTRA_URL,
@@ -22,6 +23,10 @@ const {
   MEDIA_INLINE = 'auto',
 } = process.env
 const ROUTES_FILE = process.env.ROUTES_FILE || path.join(DATA_DIR, 'routes.json')
+
+// Started by the runner (src/runner.mjs): report status over IPC and take commands from it
+const MANAGED = typeof process.send === 'function'
+const report = msg => { if (MANAGED) process.send(msg) }
 
 for (const [k, v] of Object.entries({ ARCHESTRA_URL, ARCHESTRA_AGENT_ID, ARCHESTRA_TOKEN })) {
   if (!v) { console.error(`Missing required env var ${k}`); process.exit(1) }
@@ -47,7 +52,11 @@ const defaultAgent = createAgentClient({ ...clientOptions, endpoint: A2A_ENDPOIN
 
 let routes
 try {
-  routes = loadRoutes(ROUTES_FILE, { url: ARCHESTRA_URL, token: ARCHESTRA_TOKEN, env: process.env })
+  const routeOptions = { url: ARCHESTRA_URL, token: ARCHESTRA_TOKEN, env: process.env }
+  // ROUTES_JSON (set by the runner) takes precedence over the routes file
+  routes = process.env.ROUTES_JSON
+    ? parseRoutes(JSON.parse(process.env.ROUTES_JSON), routeOptions)
+    : loadRoutes(ROUTES_FILE, routeOptions)
 } catch (e) {
   console.error(`Invalid routes: ${e.message}`); process.exit(1)
 }
@@ -145,6 +154,7 @@ async function onGroupMessage(sock, msg, info) {
   }
 
   console.log(`${jid}: message from ${number} -> ${route.name}`)
+  report({ type: 'activity', at: Date.now() })
   const from = msg.pushName ? `${msg.pushName} (${number})` : number
   enqueue(jid, () => handleMessage(sock, msg, { ...info, text }, { agent: route.client, from }))
 }
@@ -164,24 +174,51 @@ async function onDirectMessage(sock, msg, info) {
   }
 
   console.log(`${jid}: message from ${number}${route ? ` -> ${route.name}` : ''}`)
+  report({ type: 'activity', at: Date.now() })
   enqueue(jid, () => handleMessage(sock, msg, info, { agent: route?.client || defaultAgent }))
 }
+
+// Current socket, for commands from the runner
+let current = null
+let isOpen = false
+let attempt = 0
 
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
   const sock = makeWASocket({ auth: state, logger })
+  current = sock
 
   sock.ev.on('creds.update', saveCreds)
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-    if (qr) qrcode.generate(qr, { small: true }) // scan with WhatsApp > Linked devices
+    if (qr) {
+      // scan with WhatsApp > Linked devices
+      if (MANAGED) report({ type: 'qr', qr })
+      else qrcode.generate(qr, { small: true })
+    }
+    if (connection === 'connecting') report({ type: 'status', state: 'connecting' })
     if (connection === 'open') {
+      attempt = 0
+      isOpen = true
+      report({ type: 'status', state: 'connected', phone: userOf(sock.user?.id ?? ''), pushName: sock.user?.name ?? null })
       console.log('WhatsApp connected, forwarding direct chats to', A2A_ENDPOINT)
       for (const r of routes.values()) console.log(`  route ${r.isGroup ? 'group' : 'number'} ${r.key} (${r.name}) -> ${r.endpoint}${r.isGroup ? ` [${r.trigger}]` : ''}`)
     }
     if (connection === 'close') {
+      isOpen = false
+      if (current === sock) current = null
       const loggedOut = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut
-      if (!loggedOut) start()
-      else console.error(`Logged out: delete ${AUTH_DIR} and re-pair`)
+      if (loggedOut) {
+        console.error(`Logged out: delete ${AUTH_DIR} and re-pair`)
+        report({ type: 'status', state: 'logged_out' })
+        // Exit code 3 tells the runner not to restart until the session is re-paired
+        if (MANAGED) process.exit(3)
+        return
+      }
+      // Back off between reconnects so a flapping session doesn't hammer WhatsApp
+      const delay = reconnectDelay(attempt++)
+      report({ type: 'status', state: 'reconnecting', detail: lastDisconnect?.error?.message ?? null })
+      console.log(`Connection closed (${lastDisconnect?.error?.message ?? 'unknown'}), reconnecting in ${(delay / 1000).toFixed(1)}s`)
+      setTimeout(start, delay)
     }
   })
 
@@ -202,6 +239,44 @@ async function start() {
       }
     }
   })
+}
+
+// Requests from the runner: { type: 'request', id, action, args } -> { type: 'response', id, ok, result | error }
+async function runCommand(action, args = {}) {
+  const sock = current
+  if (!sock) throw new Error('WhatsApp is not connected yet')
+  if (action === 'pairingCode') {
+    if (sock.authState.creds.registered) throw new Error('This number is already linked')
+    const phone = String(args.phone || '').replace(/\D/g, '')
+    if (!phone) throw new Error('phone is required (country code, digits only)')
+    return { code: await sock.requestPairingCode(phone) }
+  }
+  // Anything else needs a linked, open session; Baileys would otherwise wait until it times out
+  if (!isOpen) throw new Error('This number is not linked to WhatsApp yet')
+  if (action === 'groups') {
+    const groups = await sock.groupFetchAllParticipating()
+    return Object.values(groups)
+      .map(g => ({ jid: g.id, subject: g.subject, size: g.participants?.length ?? null }))
+      .sort((a, b) => String(a.subject).localeCompare(String(b.subject)))
+  }
+  if (action === 'logout') {
+    await sock.logout()
+    return { ok: true }
+  }
+  throw new Error(`unknown action ${action}`)
+}
+
+if (MANAGED) {
+  process.on('message', async msg => {
+    if (msg?.type !== 'request') return
+    try {
+      report({ type: 'response', id: msg.id, ok: true, result: await runCommand(msg.action, msg.args) })
+    } catch (e) {
+      report({ type: 'response', id: msg.id, ok: false, error: e.message })
+    }
+  })
+  // The runner went away: don't keep a WhatsApp session running unsupervised
+  process.on('disconnect', () => process.exit(0))
 }
 
 start()

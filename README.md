@@ -134,6 +134,18 @@ Anyone added to a routed group can use its agent on your Archestra token, so set
 
 If a listed member is still dropped, check the number in the `sender X is not in allowedNumbers` log line. When WhatsApp only shares a member's LID (a hidden ID instead of the phone number) and the bridge has no mapping for it yet, X is that long LID; add it to the list as well.
 
+## Many numbers: dashboard and runners
+
+To run several WhatsApp numbers and manage them from a web page, deploy the dashboard in [`dashboard/`](dashboard/README.md) to Cloudflare Workers (admins sign in with Google) and run one or more **runners** on your own servers:
+
+```bash
+node src/runner.mjs   # or: docker compose --profile runner up -d runner, or Helm with mode=runner
+```
+
+A runner starts one bridge process per number assigned to it, dials out to the dashboard (no open ports), and shows each number's QR code, status and logs there. Archestra tokens stay on the runner as env vars; the dashboard only stores their names. See [dashboard/README.md](dashboard/README.md) for setup.
+
+The single-number setup below keeps working unchanged.
+
 ## Docker Compose
 
 `docker-compose.yml` runs the bridge, and optionally Archestra itself.

@@ -1,3 +1,14 @@
+{{- if eq .Values.mode "runner" }}
+The runner connects to the dashboard at {{ .Values.runner.dashboardUrl }}
+Add and link WhatsApp numbers there; QR codes show up in the dashboard.
+
+Runner logs (all numbers):
+  kubectl logs -f -n {{ .Release.Namespace }} deploy/{{ include "bridge.fullname" . }}
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled, so every pod restart needs every number to be linked again.
+{{- end }}
+{{- else }}
 The bridge is forwarding WhatsApp messages to:
   {{ .Values.archestra.url }}/v2/a2a/{{ .Values.archestra.agentId }}
 
@@ -15,3 +26,4 @@ WARNING: allowedNumbers is empty, so anyone who messages this number can reach t
 To re-pair, delete the session and restart:
   kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "bridge.fullname" . }} -- rm -rf /data/auth
   kubectl rollout restart -n {{ .Release.Namespace }} deploy/{{ include "bridge.fullname" . }}
+{{- end }}

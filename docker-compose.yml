@@ -1,5 +1,7 @@
 # Bridge only (Archestra runs elsewhere):   docker compose up -d
 # Bridge + Archestra on this host:          docker compose --profile archestra up -d
+# Runner for the dashboard (many numbers):  docker compose --profile runner up -d runner
+#   (settings in .env.runner; see .env.runner.example and dashboard/README.md)
 #
 # First run: watch the logs and scan the QR code with WhatsApp > Linked devices
 #   docker compose logs -f bridge
@@ -19,6 +21,21 @@ services:
       - ./certs:/certs:ro # extra CA certificates; see NODE_EXTRA_CA_CERTS in .env.example
     tty: true # renders the pairing QR code cleanly in `docker compose logs`
 
+  runner:
+    profiles: ["runner"]
+    build: .
+    image: baileys-archestra-a2a:latest
+    command: ["node", "src/runner.mjs"]
+    restart: unless-stopped
+    env_file: .env.runner
+    environment:
+      DATA_DIR: /data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - runner-data:/data # one session folder per number, plus the last settings from the dashboard
+      - ./certs:/certs:ro
+
   archestra:
     profiles: ["archestra"]
     image: archestra/platform:latest
@@ -35,5 +52,6 @@ services:
 
 volumes:
   bridge-data:
+  runner-data:
   archestra-postgres-data:
   archestra-app-data:

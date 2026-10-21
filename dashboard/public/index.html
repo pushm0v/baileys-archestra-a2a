@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WhatsApp Bridge</title>
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">WhatsApp Bridge</a>
+    <nav>
+      <a href="#/" data-nav="numbers">Numbers</a>
+      <a href="#/runners" data-nav="runners">Runners</a>
+      <a href="#/admins" data-nav="admins">Admins</a>
+      <a href="#/activity" data-nav="activity">Activity</a>
+    </nav>
+    <div class="who">
+      <span id="live-dot" class="dot" title="Live updates"></span>
+      <span id="me" class="muted"></span>
+      <form method="post" action="/auth/logout"><button class="link">Sign out</button></form>
+    </div>
+  </header>
+  <main id="view" class="container"></main>
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>
