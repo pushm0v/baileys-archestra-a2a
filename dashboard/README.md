@@ -32,9 +32,12 @@ Keep the client ID and client secret.
 
 ### 2. Configure and deploy
 
+The dashboard is its own npm project, so install its dependencies (including Wrangler) inside `dashboard/`. The `npm install` at the repo root doesn't cover it; skipping this step gives `wrangler: command not found`.
+
 ```bash
 cd dashboard
 npm install
+npx wrangler login                          # once per machine
 npx wrangler d1 create whatsapp-dashboard   # paste the database_id into wrangler.jsonc
 ```
 
