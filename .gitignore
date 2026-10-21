@@ -4,3 +4,6 @@ data/
 auth/
 contexts.json
 certs/
+.wrangler/
+.dev.vars
+.env.runner

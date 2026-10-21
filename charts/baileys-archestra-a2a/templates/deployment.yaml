@@ -14,7 +14,7 @@ spec:
   template:
     metadata:
       annotations:
-        {{- if not .Values.archestra.existingSecret }}
+        {{- if not (and .Values.archestra.existingSecret .Values.runner.existingSecret) }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
         {{- end }}
         {{- if .Values.caBundle.pem }}
@@ -46,7 +46,35 @@ spec:
           tty: true # renders the pairing QR code cleanly in `kubectl logs`
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if eq .Values.mode "runner" }}
+          command: ["node", "src/runner.mjs"]
+          {{- end }}
           env:
+            - name: DATA_DIR
+              value: /data
+            - name: LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            {{- if eq .Values.mode "runner" }}
+            # Runner mode: numbers and their settings come from the dashboard
+            - name: DASHBOARD_URL
+              value: {{ required "runner.dashboardUrl is required in runner mode" .Values.runner.dashboardUrl | quote }}
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bridge.runnerSecretName" . }}
+                  key: {{ .Values.runner.existingSecretKey }}
+            {{- with .Values.archestra.url }}
+            - name: ARCHESTRA_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if or .Values.archestra.token .Values.archestra.existingSecret }}
+            - name: ARCHESTRA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bridge.secretName" . }}
+                  key: {{ .Values.archestra.existingSecretKey }}
+            {{- end }}
+            {{- else }}
             - name: ARCHESTRA_URL
               value: {{ required "archestra.url is required" .Values.archestra.url | quote }}
             - name: ARCHESTRA_AGENT_ID
@@ -58,25 +86,22 @@ spec:
                   key: {{ .Values.archestra.existingSecretKey }}
             - name: ALLOWED_NUMBERS
               value: {{ join "," .Values.allowedNumbers | quote }}
-            - name: DATA_DIR
-              value: /data
             - name: AGENT_TIMEOUT_MS
               value: {{ .Values.agentTimeoutMs | quote }}
-            - name: LOG_LEVEL
-              value: {{ .Values.logLevel | quote }}
             - name: MEDIA_TYPES
               value: {{ join "," .Values.media.types | quote }}
             - name: MAX_MEDIA_MB
               value: {{ .Values.media.maxMb | quote }}
             - name: MEDIA_INLINE
               value: {{ .Values.media.inline | quote }}
-            {{- if include "bridge.hasCaBundle" . }}
-            - name: NODE_EXTRA_CA_CERTS
-              value: /certs/{{ .Values.caBundle.key }}
-            {{- end }}
             {{- if .Values.routes }}
             - name: ROUTES_FILE
               value: /config/routes.json
+            {{- end }}
+            {{- end }}
+            {{- if include "bridge.hasCaBundle" . }}
+            - name: NODE_EXTRA_CA_CERTS
+              value: /certs/{{ .Values.caBundle.key }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -91,7 +116,7 @@ spec:
               mountPath: /certs
               readOnly: true
             {{- end }}
-            {{- if .Values.routes }}
+            {{- if and .Values.routes (ne .Values.mode "runner") }}
             - name: routes
               mountPath: /config
               readOnly: true
@@ -121,7 +146,7 @@ spec:
           configMap:
             name: {{ include "bridge.fullname" . }}-ca
         {{- end }}
-        {{- if .Values.routes }}
+        {{- if and .Values.routes (ne .Values.mode "runner") }}
         - name: routes
           configMap:
             name: {{ include "bridge.fullname" . }}-routes

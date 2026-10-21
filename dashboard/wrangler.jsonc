@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "whatsapp-dashboard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-21",
+
+  "vars": {
+    // Default admins: always allowed to sign in, and can't be removed from the dashboard.
+    // Comma-separated Google account emails. More admins can be added in the dashboard.
+    "ADMIN_EMAILS": "you@example.com",
+    // OAuth client ID from Google Cloud Console > APIs & Services > Credentials (not secret)
+    "GOOGLE_CLIENT_ID": ""
+  },
+  // Set with `wrangler secret put NAME` (or in .dev.vars locally):
+  //   GOOGLE_CLIENT_SECRET  OAuth client secret
+  //   SESSION_SECRET        random string used to sign session cookies (e.g. openssl rand -base64 32)
+  "secrets": { "required": ["GOOGLE_CLIENT_SECRET", "SESSION_SECRET"] },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "whatsapp-dashboard",
+      // wrangler d1 create whatsapp-dashboard, then paste the ID here
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // One hub holds the runner and browser WebSockets and the live status of every number
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+
+  // The Worker runs first so it can require sign-in before serving the app
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  }
+}

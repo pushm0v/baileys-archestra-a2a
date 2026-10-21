@@ -1,6 +1,21 @@
 # The bridge holds one WhatsApp linked-device session, so it always runs as a single
 # replica with the Recreate strategy (two pods on one session would kick each other off).
 
+# bridge: one WhatsApp number, configured by the values below.
+# runner: many numbers, configured in the dashboard (dashboard/ in the repo). The runner
+#         dials out to the dashboard, so it needs no Service or Ingress. Only `runner`,
+#         `archestra.url` / `archestra.token` (defaults for numbers that don't set their own),
+#         `extraEnv` (more tokens), `caBundle`, `persistence` and pod settings apply.
+mode: bridge
+
+runner:
+  # Dashboard URL, e.g. https://whatsapp-dashboard.example.workers.dev
+  dashboardUrl: ""
+  # Token shown when the runner was added in the dashboard. Ignored when existingSecret is set.
+  token: ""
+  existingSecret: ""
+  existingSecretKey: runner-token
+
 image:
   repository: ghcr.io/pushm0v/baileys-archestra-a2a
   tag: "" # defaults to the chart appVersion
@@ -15,7 +30,7 @@ archestra:
   url: ""
   # Agent to invoke (Agent Triggers > Webhook / A2A shows the agent ID)
   agentId: ""
-  # Bearer token. Ignored when existingSecret is set.
+  # Bearer token. Ignored when existingSecret is set. Optional in runner mode.
   token: ""
   # Use a Secret you manage instead of `token`
   existingSecret: ""
@@ -74,6 +89,7 @@ persistence:
   size: 1Gi
   annotations: {}
 
+# In runner mode, a number or route in the dashboard refers to a token by its env var name.
 extraEnv: []
 #  - name: SALES_TOKEN          # referenced by a route as token: env:SALES_TOKEN
 #    valueFrom:
@@ -96,6 +112,7 @@ securityContext:
   capabilities:
     drop: [ALL]
 
+# Runner mode runs one Node process per number: plan for roughly 100-150 MiB each.
 resources:
   requests:
     cpu: 50m

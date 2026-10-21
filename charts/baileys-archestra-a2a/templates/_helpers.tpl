@@ -34,3 +34,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- define "bridge.hasCaBundle" -}}
 {{- if or .Values.caBundle.pem .Values.caBundle.existingConfigMap .Values.caBundle.existingSecret }}true{{ end }}
 {{- end }}
+
+{{- define "bridge.runnerSecretName" -}}
+{{- default (include "bridge.fullname" .) .Values.runner.existingSecret }}
+{{- end }}
