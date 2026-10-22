@@ -17,7 +17,7 @@ const SNAPSHOT_LOG_LINES = 50
 
 type Attachment =
   | { kind: 'runner', runnerId: string }
-  | { kind: 'browser', email: string, exp: number }
+  | { kind: 'browser', email: string, exp: number, role: string }
 
 export type LiveStatus = {
   runnerId: string
@@ -43,6 +43,9 @@ type RunnerMessage =
 
 // result is JSON text, so any shape the runner returns crosses the RPC boundary intact
 export type RequestOutcome = { ok: true, result: string } | { ok: false, offline?: boolean, error: string }
+
+// A QR code lets whoever scans it link their own phone, so viewers never receive them
+const seesQr = (role: string) => role === 'operator' || role === 'admin'
 
 export class Hub extends DurableObject<Env> {
   private pending = new Map<string, { resolve: (v: unknown) => void, reject: (e: Error) => void, timer: ReturnType<typeof setTimeout> }>()
@@ -77,9 +80,10 @@ export class Hub extends DurableObject<Env> {
     } else if (kind === 'browser') {
       const email = request.headers.get('X-Hub-Email')!
       const exp = Number(request.headers.get('X-Hub-Exp'))
+      const role = request.headers.get('X-Hub-Role')!
       this.ctx.acceptWebSocket(server, ['browser', `browser:${email}`])
-      server.serializeAttachment({ kind: 'browser', email, exp } satisfies Attachment)
-      server.send(JSON.stringify(this.snapshot()))
+      server.serializeAttachment({ kind: 'browser', email, exp, role } satisfies Attachment)
+      server.send(JSON.stringify(this.snapshot(seesQr(role))))
     } else {
       return new Response('unknown connection kind', { status: 400 })
     }
@@ -154,7 +158,7 @@ export class Hub extends DurableObject<Env> {
     } else if (msg.type === 'qr') {
       if (msg.svg) this.ctx.storage.sql.exec('INSERT OR REPLACE INTO qr (number_id, svg) VALUES (?, ?)', id, msg.svg)
       else this.ctx.storage.sql.exec('DELETE FROM qr WHERE number_id = ?', id)
-      this.broadcast({ type: 'qr', numberId: id, svg: msg.svg })
+      this.broadcast({ type: 'qr', numberId: id, svg: msg.svg }, { qr: true })
     } else if (msg.type === 'log') {
       const line = { stream: msg.stream, line: String(msg.line).slice(0, 2000), at: msg.at }
       const sql = this.ctx.storage.sql
@@ -186,14 +190,14 @@ export class Hub extends DurableObject<Env> {
     return [...ids]
   }
 
-  private snapshot() {
+  private snapshot(withQrs: boolean) {
     const live: Record<string, LiveStatus> = {}
     for (const row of this.ctx.storage.sql.exec<{ number_id: string, data: string }>('SELECT number_id, data FROM live')) {
       live[row.number_id] = JSON.parse(row.data)
     }
     const sql = this.ctx.storage.sql
     const qrs: Record<string, string> = {}
-    for (const row of sql.exec<{ number_id: string, svg: string }>('SELECT number_id, svg FROM qr')) qrs[row.number_id] = row.svg
+    if (withQrs) for (const row of sql.exec<{ number_id: string, svg: string }>('SELECT number_id, svg FROM qr')) qrs[row.number_id] = row.svg
     const logs: Record<string, LogLine[]> = {}
     const recent = sql.exec<{ number_id: string, stream: string, line: string, at: number }>(`SELECT number_id, stream, line, at FROM
       (SELECT *, ROW_NUMBER() OVER (PARTITION BY number_id ORDER BY id DESC) AS n FROM logs) WHERE n <= ${SNAPSHOT_LOG_LINES} ORDER BY id`)
@@ -201,13 +205,14 @@ export class Hub extends DurableObject<Env> {
     return { type: 'snapshot', onlineRunners: this.onlineRunners(), live, qrs, logs }
   }
 
-  private broadcast(msg: object) {
+  private broadcast(msg: object, { qr = false } = {}) {
     const data = JSON.stringify(msg)
     const now = Date.now()
     for (const ws of this.ctx.getWebSockets('browser')) {
       const att = ws.deserializeAttachment() as Attachment
       // The tab's sign-in has expired: stop streaming to it
       if (att.kind === 'browser' && att.exp <= now) { ws.close(4401, 'session expired'); continue }
+      if (qr && att.kind === 'browser' && !seesQr(att.role)) continue
       try { ws.send(data) } catch { /* closing */ }
     }
   }
@@ -254,8 +259,10 @@ export class Hub extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets(`runner:${runnerId}`)) ws.close(4003, 'runner token revoked')
   }
 
-  disconnectBrowser(email: string): void {
-    for (const ws of this.ctx.getWebSockets(`browser:${email}`)) ws.close(4403, 'access removed')
+  // 4403 sends the tab to the login page; 4409 makes it reload with the new role
+  disconnectBrowser(email: string, reason: 'access removed' | 'role changed' = 'access removed'): void {
+    const code = reason === 'role changed' ? 4409 : 4403
+    for (const ws of this.ctx.getWebSockets(`browser:${email}`)) ws.close(code, reason)
   }
 
   // Drop live state for a number that was deleted or moved to another runner

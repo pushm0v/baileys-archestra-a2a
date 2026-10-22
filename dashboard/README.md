@@ -1,12 +1,12 @@
 # WhatsApp Bridge dashboard
 
-A Cloudflare Worker for running many WhatsApp numbers with the bridge: add numbers, link them by QR or pairing code, set their agents and group routes, and watch their status and logs live. Admins sign in with Google.
+A Cloudflare Worker for running many WhatsApp numbers with the bridge: add numbers, link them by QR or pairing code, set their agents and group routes, and watch their status and logs live. People sign in with Google, limited to the email domains you allow, and each has a role: viewer, operator or admin.
 
 The WhatsApp sessions don't run on Cloudflare. They run in **runners**, which are the bridge's Docker image started with `node src/runner.mjs` on your own server or Kubernetes. A runner starts one bridge process per number and dials out to the dashboard over a WebSocket, so it needs no open ports.
 
 ```
 Browser ──Google sign-in──▶ Worker (API + UI)
-   ▲                          ├─ D1: admins, runners, numbers, routes, audit log
+   ▲                          ├─ D1: users, runners, numbers, routes, audit log
    │ live status, QR codes    └─ Durable Object "Hub" ◀──WebSocket── Runner (your server)
    └──────────────────────────────────┘                               ├─ bridge process: number A
                                                                       └─ bridge process: number B
@@ -40,7 +40,8 @@ npx wrangler d1 create whatsapp-dashboard   # paste the database_id into wrangle
 
 Edit `wrangler.jsonc`:
 
-- `ADMIN_EMAILS`: the default admins' Google emails, comma-separated. They can always sign in and can't be removed from the dashboard. Other admins can be added in the dashboard (**Admins** page).
+- `ADMIN_EMAILS`: the default admins' Google emails, comma-separated. They can always sign in and can't be changed from the dashboard. Everyone else gets a role on the **Users** page.
+- `ALLOWED_DOMAINS`: the email domains that may sign in, comma-separated (e.g. `kitabisa.com`). Leave it empty to allow any domain; then only people an admin has invited can sign in. See [Users and roles](#users-and-roles).
 - `GOOGLE_CLIENT_ID`: from step 1.
 
 Then:
@@ -81,10 +82,27 @@ Extra tokens go in as more env vars (e.g. `-e SALES_TOKEN=…`, or `extraEnv` in
 
 Saving settings restarts that number's bridge process, which keeps its session, so no new scan is needed. **Re-pair** logs the number out and shows a new QR code. **Delete** logs it out of WhatsApp and removes its session from the runner.
 
+## Users and roles
+
+| Role | Can |
+| --- | --- |
+| **viewer** | See numbers, runners, live status and logs. Not QR codes, since scanning one links the scanner's phone. |
+| **operator** | Viewer, plus add, edit and delete numbers, link them (QR or pairing code), restart and re-pair them, and see **Activity**. |
+| **admin** | Operator, plus add and remove runners, issue runner tokens, and manage users. |
+
+There are two ways to give someone access, both on the **Users** page (admins only):
+
+- **They sign in first.** With `ALLOWED_DOMAINS` set, anyone from those domains can sign in with Google. They see "Waiting for access" and show up under **Waiting for a role**; pick a role and press **Give access**, and they can sign in.
+- **Invite them.** Enter their email and a role. They can sign in straight away; send them the dashboard link (the dashboard doesn't send email).
+
+Change a role from the list, **Revoke** to take access away (they stay listed as waiting), or **Remove** to delete them. Changes apply at once: open tabs reload with the new role, or are signed out. You can't change your own role, and default admins (`ADMIN_EMAILS`) can only be changed in `wrangler.jsonc`.
+
+For a Google Workspace domain such as `kitabisa.com`, sign-in also checks Google's hosted-domain (`hd`) claim, so a personal Google account registered with a `@kitabisa.com` address is refused. To allow personal Gmail accounts, add `gmail.com`. Removing a domain from `ALLOWED_DOMAINS` takes access away from its users at once (shown as **Domain not allowed**). Default admins can always sign in, whatever their domain.
+
 ## Security notes
 
-- Sign-in uses Google's OpenID Connect code flow with PKCE, `state` and `nonce`. The ID token's signature, issuer, audience and `email_verified` are checked, and the email must be in `ADMIN_EMAILS` or added on the Admins page.
-- Sessions are HMAC-signed `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Lax`) valid for 12 hours. Admin access is re-checked on every request, so removing an admin takes effect at once, and their open live connections are closed.
+- Sign-in uses Google's OpenID Connect code flow with PKCE, `state` and `nonce`. The ID token's signature, issuer, audience and `email_verified` are checked. The email must be in `ADMIN_EMAILS`, or be from `ALLOWED_DOMAINS` (with a matching `hd` claim for Workspace domains) and have a role.
+- Sessions are HMAC-signed `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Lax`) valid for 12 hours. Each user's role is re-checked on every request, so a role change or removal takes effect at once, and their open live connections are closed. Every API route checks the role on the server; the UI only hides what a role can't use.
 - Requests that change anything, and the live WebSocket, must come from the dashboard's own origin. Pages are served with a strict Content-Security-Policy.
 - Runner tokens are stored only as SHA-256 hashes. A runner can only report on numbers assigned to it.
 - QR codes and recent log lines live only in the hub's private Durable Object storage, never in D1. A QR code is deleted once its number is linked or stopped. Every change is recorded on the **Activity** page.

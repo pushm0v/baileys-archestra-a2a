@@ -136,7 +136,7 @@ If a listed member is still dropped, check the number in the `sender X is not in
 
 ## Many numbers: dashboard and runners
 
-To run several WhatsApp numbers and manage them from a web page, deploy the dashboard in [`dashboard/`](dashboard/README.md) to Cloudflare Workers (admins sign in with Google) and run one or more **runners** on your own servers:
+To run several WhatsApp numbers and manage them from a web page, deploy the dashboard in [`dashboard/`](dashboard/README.md) to Cloudflare Workers (your team signs in with Google, with viewer, operator or admin roles) and run one or more **runners** on your own servers:
 
 ```bash
 node src/runner.mjs   # or: docker compose --profile runner up -d runner, or Helm with mode=runner
