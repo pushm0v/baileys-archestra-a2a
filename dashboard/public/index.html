@@ -14,12 +14,13 @@
     <nav>
       <a href="#/" data-nav="numbers">Numbers</a>
       <a href="#/runners" data-nav="runners">Runners</a>
-      <a href="#/admins" data-nav="admins">Admins</a>
-      <a href="#/activity" data-nav="activity">Activity</a>
+      <a href="#/users" data-nav="users" data-min="admin" hidden>Users</a>
+      <a href="#/activity" data-nav="activity" data-min="operator" hidden>Activity</a>
     </nav>
     <div class="who">
       <span id="live-dot" class="dot" title="Live updates"></span>
       <span id="me" class="muted"></span>
+      <span id="my-role" class="pill muted"></span>
       <form method="post" action="/auth/logout"><button class="link">Sign out</button></form>
     </div>
   </header>

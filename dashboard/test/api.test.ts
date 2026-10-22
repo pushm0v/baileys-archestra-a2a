@@ -92,11 +92,11 @@ describe('sign-in', () => {
       jwk = { ...await exportJWK(keys.publicKey), kid: 'test-key', alg: 'RS256', use: 'sig' }
     })
 
-    async function signIn(email: string, { verified = true, nonceOverride }: { verified?: boolean, nonceOverride?: string } = {}) {
+    async function signIn(email: string, { verified = true, nonceOverride, hd = email.toLowerCase().endsWith('@example.com') ? 'example.com' : undefined }: { verified?: boolean, nonceOverride?: string, hd?: string } = {}) {
       const start = await call('GET', '/auth/login', { email: null })
       const google = new URL(start.headers.get('Location')!)
       const oauthCookie = start.headers.get('Set-Cookie')!.split(';')[0]
-      const idToken = await new SignJWT({ email, email_verified: verified, nonce: nonceOverride ?? google.searchParams.get('nonce') })
+      const idToken = await new SignJWT({ email, email_verified: verified, nonce: nonceOverride ?? google.searchParams.get('nonce'), ...(hd && { hd }) })
         .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
         .setIssuer('https://accounts.google.com')
         .setAudience('test-client.apps.googleusercontent.com')
@@ -126,13 +126,40 @@ describe('sign-in', () => {
       const cookie = res.headers.get('Set-Cookie')!
       expect(cookie).toMatch(/__Host-session=/)
       const me = await worker.fetch(`${ORIGIN}/api/me`, { headers: { Cookie: cookie.match(/__Host-session=[^;]+/)![0] } })
-      expect(await me.json()).toEqual({ email: 'second@example.com' })
+      expect(await me.json()).toEqual({ email: 'second@example.com', role: 'admin' })
     })
 
-    it('refuses Google accounts that are not admins', async () => {
-      const res = await signIn('stranger@example.com')
-      expect(res.status).toBe(403)
-      expect(res.headers.get('Set-Cookie') ?? '').not.toMatch(/__Host-session=[^;]/)
+    it('refuses accounts outside ALLOWED_DOMAINS, including personal accounts using a work address', async () => {
+      const outside = await signIn('someone@gmail.com')
+      expect(outside.status).toBe(403)
+      expect(await outside.text()).toContain('Only @example.com')
+      expect(outside.headers.get('Set-Cookie') ?? '').not.toMatch(/__Host-session=[^;]/)
+      // Right email domain, but not a Workspace account of that domain
+      expect((await signIn('sneaky@example.com', { hd: '' })).status).toBe(403)
+      expect((await signIn('sneaky@example.com', { hd: 'other.com' })).status).toBe(403)
+      const { users } = await (await call('GET', '/api/users')).json<any>()
+      expect(users.map((u: any) => u.email)).not.toContain('sneaky@example.com')
+    })
+
+    it('records allowed-domain users as waiting, and lets them in once an admin gives them a role', async () => {
+      const first = await signIn('Newbie@example.com')
+      expect(first.status).toBe(403)
+      expect(await first.text()).toContain('Waiting for access')
+      expect(first.headers.get('Set-Cookie') ?? '').not.toMatch(/__Host-session=[^;]/)
+
+      const { users } = await (await call('GET', '/api/users')).json<any>()
+      expect(users.find((u: any) => u.email === 'newbie@example.com')).toMatchObject({ role: null, status: 'pending' })
+
+      expect((await call('PATCH', '/api/users/newbie@example.com', { body: { role: 'viewer' } })).status).toBe(200)
+      const second = await signIn('newbie@example.com')
+      expect(second.status).toBe(302)
+      const me = await worker.fetch(`${ORIGIN}/api/me`, { headers: { Cookie: second.headers.get('Set-Cookie')!.match(/__Host-session=[^;]+/)![0] } })
+      expect(await me.json()).toEqual({ email: 'newbie@example.com', role: 'viewer' })
+    })
+
+    it('asks Google for accounts of the one allowed domain', async () => {
+      const res = await call('GET', '/auth/login', { email: null })
+      expect(new URL(res.headers.get('Location')!).searchParams.get('hd')).toBe('example.com')
     })
 
     it('refuses unverified emails and replayed tokens', async () => {
@@ -142,19 +169,94 @@ describe('sign-in', () => {
   })
 })
 
-describe('admins', () => {
-  it('lists config admins and manages dashboard admins', async () => {
-    const users = await (await call('GET', '/api/users')).json<any[]>()
-    expect(users.map(u => [u.email, u.source])).toEqual([['boss@example.com', 'config'], ['second@example.com', 'config']])
+describe('users and roles', () => {
+  it('lists config admins and invites, changes and removes users', async () => {
+    const first = await (await call('GET', '/api/users')).json<any>()
+    expect(first.allowedDomains).toEqual(['example.com'])
+    expect(first.users.filter((u: any) => u.source === 'config').map((u: any) => [u.email, u.role])).toEqual([['boss@example.com', 'admin'], ['second@example.com', 'admin']])
 
-    expect((await call('POST', '/api/users', { body: { email: 'new@example.com' }, origin: false })).status).toBe(403)
-    expect((await call('POST', '/api/users', { body: { email: 'New@Example.com' } })).status).toBe(201)
-    expect((await call('GET', '/api/me', { email: 'new@example.com' })).status).toBe(200)
+    expect((await call('POST', '/api/users', { body: { email: 'new@example.com', role: 'admin' }, origin: false })).status).toBe(403)
+    expect((await call('POST', '/api/users', { body: { email: 'new@example.com' } })).status).toBe(400) // role is required
+    expect((await call('POST', '/api/users', { body: { email: 'new@example.com', role: 'owner' } })).status).toBe(400)
+    expect((await call('POST', '/api/users', { body: { email: 'friend@gmail.com', role: 'viewer' } })).status).toBe(400) // outside ALLOWED_DOMAINS
+    expect((await call('POST', '/api/users', { body: { email: 'New@Example.com', role: 'operator' } })).status).toBe(201)
+    expect((await call('POST', '/api/users', { body: { email: 'new@example.com', role: 'viewer' } })).status).toBe(409)
+    const { users } = await (await call('GET', '/api/users')).json<any>()
+    expect(users.find((u: any) => u.email === 'new@example.com')).toMatchObject({ role: 'operator', status: 'invited', invitedBy: ADMIN })
+    expect(await (await call('GET', '/api/me', { email: 'new@example.com' })).json()).toEqual({ email: 'new@example.com', role: 'operator' })
 
-    expect((await call('DELETE', '/api/users/boss@example.com')).status).toBe(400)
-    expect((await call('DELETE', '/api/users/new@example.com')).status).toBe(204)
-    // A removed admin's existing session stops working at once
+    // Config admins and your own account can't be changed here
+    expect((await call('PATCH', '/api/users/boss@example.com', { body: { role: 'viewer' }, email: 'second@example.com' })).status).toBe(400)
+    expect((await call('DELETE', '/api/users/boss@example.com', { email: 'second@example.com' })).status).toBe(400)
+    await call('POST', '/api/users', { body: { email: 'self@example.com', role: 'admin' } })
+    expect((await call('PATCH', '/api/users/self@example.com', { body: { role: 'viewer' }, email: 'self@example.com' })).status).toBe(400)
+
+    // Revoking keeps the user listed but signs them out at once
+    expect((await call('PATCH', '/api/users/new@example.com', { body: { role: null } })).status).toBe(200)
     expect((await call('GET', '/api/me', { email: 'new@example.com' })).status).toBe(401)
+    expect((await call('POST', '/api/users', { body: { email: 'new@example.com', role: 'viewer' } })).status).toBe(201) // a pending user can be invited again
+
+    expect((await call('DELETE', '/api/users/new@example.com')).status).toBe(204)
+    expect((await call('GET', '/api/me', { email: 'new@example.com' })).status).toBe(401)
+    expect((await call('PATCH', '/api/users/new@example.com', { body: { role: 'viewer' } })).status).toBe(404)
+
+    const audit = await (await call('GET', '/api/audit')).json<any[]>()
+    expect(audit.map(a => a.action)).toEqual(expect.arrayContaining(['user.invite', 'user.role', 'user.remove']))
+  })
+
+  it('limits what viewers and operators can do', async () => {
+    await call('POST', '/api/users', { body: { email: 'viewer@example.com', role: 'viewer' } })
+    await call('POST', '/api/users', { body: { email: 'op@example.com', role: 'operator' } })
+    const runner = await (await call('POST', '/api/runners', { body: { name: 'roles' } })).json<{ id: string }>()
+    const number = { name: 'Roles', runnerId: runner.id, agentId: 'a' }
+
+    const viewer = { email: 'viewer@example.com' }
+    expect((await call('GET', '/api/numbers', viewer)).status).toBe(200)
+    expect((await call('GET', '/api/runners', viewer)).status).toBe(200)
+    expect((await call('POST', '/api/numbers', { ...viewer, body: number })).status).toBe(403)
+    expect((await call('GET', '/api/audit', viewer)).status).toBe(403)
+    expect((await call('GET', '/api/users', viewer)).status).toBe(403)
+
+    const op = { email: 'op@example.com' }
+    const created = await call('POST', '/api/numbers', { ...op, body: number })
+    expect(created.status).toBe(201)
+    const { id } = await created.json<{ id: string }>()
+    expect((await call('POST', `/api/numbers/${id}/actions/restart`, viewer)).status).toBe(403)
+    expect((await call('POST', `/api/numbers/${id}/actions/restart`, op)).status).toBe(409) // allowed; the runner is offline
+    expect((await call('GET', '/api/audit', op)).status).toBe(200)
+    expect((await call('POST', '/api/runners', { ...op, body: { name: 'nope' } })).status).toBe(403)
+    expect((await call('POST', `/api/runners/${runner.id}/rotate`, op)).status).toBe(403)
+    expect((await call('GET', '/api/users', op)).status).toBe(403)
+    expect((await call('POST', '/api/users', { ...op, body: { email: 'x@example.com', role: 'admin' } })).status).toBe(403)
+  })
+
+  it('never sends QR codes to viewers, and reconnects tabs when a role changes', async () => {
+    await call('POST', '/api/users', { body: { email: 'watcher@example.com', role: 'viewer' } })
+    const runner = await (await call('POST', '/api/runners', { body: { name: 'qr' } })).json<{ id: string, token: string }>()
+    const { id } = await (await call('POST', '/api/numbers', { body: { name: 'QR', runnerId: runner.id, agentId: 'a' } })).json<{ id: string }>()
+    const rws = await connectRunner(runner.token)
+    rws.send({ type: 'hello', statuses: [] })
+    await rws.next(m => m.type === 'sync')
+
+    const admin = await connectBrowser()
+    await admin.next(m => m.type === 'snapshot')
+    const viewer = await connectBrowser('watcher@example.com')
+    await viewer.next(m => m.type === 'snapshot')
+
+    rws.send({ type: 'qr', numberId: id, svg: '<svg/>' })
+    rws.send({ type: 'status', numberId: id, state: 'waiting_for_scan' })
+    await admin.next(m => m.type === 'qr')
+    await viewer.next(m => m.type === 'status' && m.numberId === id)
+    await expect(viewer.next(m => m.type === 'qr', 300)).rejects.toThrow()
+
+    const late = await connectBrowser('watcher@example.com')
+    expect((await late.next(m => m.type === 'snapshot')).qrs).toEqual({})
+
+    const closed = new Promise<CloseEvent>(resolve => late.ws.addEventListener('close', resolve))
+    await call('PATCH', '/api/users/watcher@example.com', { body: { role: 'operator' } })
+    expect((await closed).code).toBe(4409)
+    const promoted = await connectBrowser('watcher@example.com')
+    expect((await promoted.next(m => m.type === 'snapshot')).qrs[id]).toBe('<svg/>')
   })
 
   it('refuses sessions that are expired or signed with another key', async () => {

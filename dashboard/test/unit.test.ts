@@ -1,6 +1,28 @@
 import { describe, it, expect } from 'vitest'
 import { sign, verify, safeEqual, sha256Hex } from '../src/crypto'
 import { parseNumber, parseEmail, ValidationError } from '../src/validate'
+import { allowedDomains, domainAllowed, loginDomainAllowed } from '../src/auth'
+
+describe('sign-in domain rules', () => {
+  const env = (ALLOWED_DOMAINS: string) => ({ ALLOWED_DOMAINS, ADMIN_EMAILS: '' }) as unknown as Env
+
+  it('requires the Workspace hd claim to match for company domains', () => {
+    const e = env('Kitabisa.com, @partner.org')
+    expect(allowedDomains(e)).toEqual(['kitabisa.com', 'partner.org'])
+    expect(loginDomainAllowed(e, 'ana@kitabisa.com', 'kitabisa.com')).toBe(true)
+    expect(loginDomainAllowed(e, 'ana@partner.org', 'partner.org')).toBe(true)
+    expect(loginDomainAllowed(e, 'ana@kitabisa.com', null)).toBe(false)
+    expect(loginDomainAllowed(e, 'ana@kitabisa.com', 'evil.com')).toBe(false)
+    expect(loginDomainAllowed(e, 'ana@gmail.com', null)).toBe(false)
+    expect(loginDomainAllowed(e, 'ana@sub.kitabisa.com', 'sub.kitabisa.com')).toBe(false)
+  })
+
+  it('allows personal Gmail accounts only when gmail.com is listed, and anything when the list is empty', () => {
+    expect(loginDomainAllowed(env('gmail.com'), 'ana@gmail.com', null)).toBe(true)
+    expect(loginDomainAllowed(env(''), 'ana@anything.io', null)).toBe(true)
+    expect(domainAllowed(env(''), 'ana@anything.io')).toBe(true)
+  })
+})
 
 describe('signed values', () => {
   it('round-trips and rejects tampering, wrong keys and expiry', async () => {

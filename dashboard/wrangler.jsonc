@@ -8,6 +8,11 @@
     // Default admins: always allowed to sign in, and can't be removed from the dashboard.
     // Comma-separated Google account emails. More admins can be added in the dashboard.
     "ADMIN_EMAILS": "you@example.com",
+    // Only Google accounts from these email domains can sign in (comma-separated, e.g. "kitabisa.com").
+    // Anyone from them who signs in appears on the Users page, waiting for an admin to give them a role.
+    // Leave empty to allow any domain; then only users an admin has invited can sign in.
+    // ADMIN_EMAILS can always sign in.
+    "ALLOWED_DOMAINS": "kitabisa.com",
     // OAuth client ID from Google Cloud Console > APIs & Services > Credentials (not secret)
     "GOOGLE_CLIENT_ID": ""
   },

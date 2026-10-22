@@ -10,6 +10,7 @@ export default defineConfig({
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations(path.join(import.meta.dirname, 'migrations')),
           ADMIN_EMAILS: 'boss@example.com, Second@Example.com',
+          ALLOWED_DOMAINS: 'example.com',
           GOOGLE_CLIENT_ID: 'test-client.apps.googleusercontent.com',
           GOOGLE_CLIENT_SECRET: 'test-secret',
           SESSION_SECRET: 'test-session-secret',

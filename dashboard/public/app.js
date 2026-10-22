@@ -58,6 +58,18 @@ function ago(ts) {
   return new Date(ts).toLocaleDateString()
 }
 
+// ---------- Signed-in user ----------
+
+// Lowest to highest, same as the server. The server enforces every rule; this only hides controls.
+const ROLES = ['viewer', 'operator', 'admin']
+const ROLE_HELP = {
+  viewer: 'See numbers, runners, status and logs',
+  operator: 'Viewer, plus add and edit numbers, link and re-pair them, and see activity',
+  admin: 'Operator, plus manage runners and users',
+}
+const me = { email: '', role: 'viewer' }
+const can = min => ROLES.indexOf(me.role) >= ROLES.indexOf(min)
+
 // ---------- Live state ----------
 
 const live = { statuses: {}, qrs: {}, logs: {}, onlineRunners: new Set(), listeners: new Set() }
@@ -96,6 +108,7 @@ function connectLive(attempt = 0) {
   ws.onclose = e => {
     $('#live-dot').className = 'dot off'
     if (e.code === 4401 || e.code === 4403) { location.href = '/login'; return }
+    if (e.code === 4409) { location.reload(); return } // role changed
     setTimeout(() => connectLive(attempt + 1), Math.min(30_000, 1000 * 2 ** attempt))
   }
 }
@@ -152,13 +165,13 @@ async function viewNumbers(root) {
           h('span', {}, `Last message: ${ago(s.lastMessageAt)}`)),
         live.qrs[n.id] && h('div', { class: 'hint' }, 'QR code ready: open to link this number'))
     }))
-    if (!numbers.length) fill(grid, h('p', { class: 'muted' }, 'No numbers yet. Add a runner first, then add a number.'))
+    if (!numbers.length) fill(grid, h('p', { class: 'muted' }, can('operator') ? 'No numbers yet. Add a runner first, then add a number.' : 'No numbers yet.'))
   }
   render()
   onLive(render)
 
   fill(root, 
-    h('div', { class: 'row between' }, h('h1', {}, 'Numbers'), h('a', { class: 'button primary', href: '#/numbers/new' }, 'Add number')),
+    h('div', { class: 'row between' }, h('h1', {}, 'Numbers'), can('operator') && h('a', { class: 'button primary', href: '#/numbers/new' }, 'Add number')),
     grid)
 }
 
@@ -192,6 +205,8 @@ function readRoute(row) {
 
 async function viewNumber(root, id) {
   const isNew = id === 'new'
+  const editable = can('operator')
+  if (isNew && !editable) return fill(root, h('p', { class: 'error' }, 'Adding numbers needs the operator role.'))
   const [runners, number] = await Promise.all([api('GET', '/runners'), isNew ? null : api('GET', `/numbers/${id}`)])
   const n = number || { name: '', runnerId: runners[0]?.id ?? null, enabled: true, agentId: '', allowedNumbers: [], routes: [], mediaTypes: null }
 
@@ -219,7 +234,7 @@ async function viewNumber(root, id) {
       st.detail && h('p', { class: 'muted' }, st.detail),
       s.phone && h('p', {}, `Linked to +${s.phone}${s.pushName ? ` (${s.pushName})` : ''}`),
       h('p', { class: 'muted' }, `Last message ${ago(s.lastMessageAt)}${s.messageCount ? ` · ${s.messageCount} handled since the dashboard started tracking` : ''}`),
-      qr && h('div', { class: 'qr' },
+      editable && qr && h('div', { class: 'qr' },
         h('img', { src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(qr)}`, alt: 'WhatsApp pairing QR code' }),
         h('div', {},
           h('p', {}, 'On the phone: WhatsApp → Linked devices → Link a device, then scan this code. It refreshes every few seconds.'),
@@ -229,7 +244,8 @@ async function viewNumber(root, id) {
             if (r?.code) fill(pairingResult, h('p', {}, 'Enter this code on the phone (Link with phone number instead): ', h('code', { class: 'big' }, r.code)))
           } }, 'Get pairing code')),
           pairingResult)),
-      h('div', { class: 'row actions' },
+      !editable && st.label === 'Waiting for QR scan' && h('p', { class: 'muted' }, 'An operator or admin needs to link this number.'),
+      editable && h('div', { class: 'row actions' },
         h('button', { onclick: async () => { if (await action('restart')) toast('Restarting') } }, 'Restart'),
         h('button', { onclick: async () => { if (await action('unlink', null, 'Log this number out of WhatsApp and show a new QR code?')) toast('Session removed, waiting for a new QR code') } }, 'Re-pair')),
     )
@@ -294,6 +310,12 @@ async function viewNumber(root, id) {
         } catch (e) { fail(e) }
       } }, 'Delete')))
 
+  // Viewers see the settings read-only
+  if (!editable) {
+    for (const el of form.elements) el.disabled = true
+    for (const el of form.querySelectorAll('button')) el.hidden = true
+  }
+
   form.addEventListener('submit', async e => {
     e.preventDefault()
     const f = form.elements
@@ -351,7 +373,7 @@ async function viewRunners(root) {
         h('strong', {}, r.name), ' ',
         pill(live.onlineRunners.has(r.id) ? { label: 'Online', tone: 'ok' } : { label: 'Offline', tone: 'bad' }),
         h('div', { class: 'muted' }, `${r.numbers} number(s) · last seen ${ago(r.lastSeenAt)}`)),
-      h('div', { class: 'row' },
+      can('admin') && h('div', { class: 'row' },
         h('button', { onclick: async () => {
           if (!confirm(`Issue a new token for "${r.name}"? The runner disconnects until it is restarted with the new token.`)) return
           try { const { token } = await api('POST', `/runners/${r.id}/rotate`); fill(notice, tokenNotice(token)); render() } catch (e) { fail(e) }
@@ -360,7 +382,7 @@ async function viewRunners(root) {
           if (!confirm(`Remove runner "${r.name}"?`)) return
           try { await api('DELETE', `/runners/${r.id}`); render() } catch (e) { fail(e) }
         } }, 'Remove')))))
-    if (!runners.length) fill(list, h('p', { class: 'muted' }, 'No runners yet. Add one, then start it on your server with the token it gives you.'))
+    if (!runners.length) fill(list, h('p', { class: 'muted' }, can('admin') ? 'No runners yet. Add one, then start it on your server with the token it gives you.' : 'No runners yet.'))
   }
   const name = h('input', { placeholder: 'e.g. k8s-prod', required: true })
   const form = h('form', { class: 'row' }, name, h('button', { class: 'primary' }, 'Add runner'))
@@ -376,31 +398,98 @@ async function viewRunners(root) {
   onLive(msg => { if (msg.type === 'runner' || msg.type === 'snapshot') render() })
   fill(root, h('h1', {}, 'Runners'),
     h('p', { class: 'muted' }, 'A runner is a server that runs the WhatsApp sessions. It connects out to this dashboard, so it needs no open ports. Archestra tokens stay on the runner as env vars.'),
-    form, notice, list)
+    can('admin') && form, notice, list)
   await render()
 }
 
-async function viewAdmins(root) {
+const STATUS = {
+  active: ['Active', 'ok'],
+  invited: ['Invited', 'info'],
+  pending: ['Waiting for a role', 'warn'],
+  blocked: ['Domain not allowed', 'bad'],
+}
+
+function roleSelect(value, { none = false, disabled = false } = {}) {
+  return h('select', { disabled, class: 'role' },
+    none && h('option', { value: '', selected: !value }, 'Choose a role…'),
+    ROLES.map(r => h('option', { value: r, selected: r === value, title: ROLE_HELP[r] }, r)))
+}
+
+async function viewUsers(root) {
+  const pendingBox = h('div', { class: 'stack' })
   const list = h('div', { class: 'stack' })
-  const render = async () => {
-    const users = await api('GET', '/users')
-    fill(list, ...users.map(u => h('div', { class: 'card row between' },
-      h('div', {}, h('strong', {}, u.email),
-        h('div', { class: 'muted' }, u.source === 'config' ? 'Default admin (ADMIN_EMAILS in wrangler.jsonc)' : `Added by ${u.addedBy} · ${ago(u.createdAt)}`)),
-      u.source === 'dashboard' && h('button', { class: 'danger', onclick: async () => {
-        if (!confirm(`Remove ${u.email}?`)) return
-        try { await api('DELETE', `/users/${encodeURIComponent(u.email)}`); render() } catch (e) { fail(e) }
-      } }, 'Remove'))))
+  const domainsNote = h('p', { class: 'muted' })
+
+  const setRole = async (u, role) => {
+    try {
+      await api('PATCH', `/users/${encodeURIComponent(u.email)}`, { role })
+      toast(role ? `${u.email} is now ${role}` : `Took access away from ${u.email}`)
+    } catch (e) { fail(e) }
+    render()
   }
-  const email = h('input', { type: 'email', placeholder: 'name@gmail.com', required: true })
-  const form = h('form', { class: 'row' }, email, h('button', { class: 'primary' }, 'Add admin'))
+  const remove = async u => {
+    if (!confirm(`Remove ${u.email}? They are signed out at once.`)) return
+    try { await api('DELETE', `/users/${encodeURIComponent(u.email)}`); render() } catch (e) { fail(e) }
+  }
+
+  const render = async () => {
+    const { users, allowedDomains } = await api('GET', '/users')
+    fill(domainsNote, allowedDomains.length
+      ? ['Only ', h('strong', {}, allowedDomains.map(d => `@${d}`).join(', ')), ' Google accounts can sign in (ALLOWED_DOMAINS). Anyone from them who signs in shows up below, waiting for a role.']
+      : 'Any Google account can be invited (ALLOWED_DOMAINS is empty). Only invited users can sign in.')
+
+    const pending = users.filter(u => u.status === 'pending')
+    fill(pendingBox, pending.length > 0 && [
+      h('h2', {}, `Waiting for a role (${pending.length})`),
+      ...pending.map(u => {
+        const select = roleSelect(null, { none: true })
+        return h('div', { class: 'card row between wrap' },
+          h('div', {}, h('strong', {}, u.email), h('div', { class: 'muted' }, `Signed in ${ago(u.lastLoginAt)}`)),
+          h('div', { class: 'row' }, select,
+            h('button', { class: 'primary', onclick: () => select.value ? setRole(u, select.value) : toast('Choose a role first', 'error') }, 'Give access'),
+            h('button', { class: 'danger', onclick: () => remove(u) }, 'Remove')))
+      }),
+    ])
+
+    fill(list, h('h2', {}, 'Users'), ...users.filter(u => u.status !== 'pending').map(u => {
+      const locked = u.source === 'config' || u.email === me.email
+      const select = roleSelect(u.role, { disabled: locked })
+      select.addEventListener('change', () => {
+        if (u.role === 'admin' || select.value === 'admin' ? confirm(`Make ${u.email} ${select.value}?`) : true) setRole(u, select.value)
+        else select.value = u.role
+      })
+      const [label, tone] = STATUS[u.status] || [u.status, 'muted']
+      const meta = u.source === 'config' ? 'Default admin (ADMIN_EMAILS in wrangler.jsonc)'
+        : u.email === me.email ? 'You'
+        : [u.invitedBy && `Invited by ${u.invitedBy}`, u.lastLoginAt ? `last sign-in ${ago(u.lastLoginAt)}` : 'has not signed in yet',
+           u.updatedBy && u.updatedAt && `role set by ${u.updatedBy} ${ago(u.updatedAt)}`].filter(Boolean).join(' · ')
+      return h('div', { class: 'card row between wrap' },
+        h('div', {}, h('strong', {}, u.email), ' ', pill({ label, tone }), h('div', { class: 'muted' }, meta)),
+        h('div', { class: 'row' }, select,
+          !locked && h('button', { onclick: () => setRole(u, null) }, 'Revoke'),
+          !locked && h('button', { class: 'danger', onclick: () => remove(u) }, 'Remove')))
+    }))
+  }
+
+  const email = h('input', { type: 'email', placeholder: 'name@kitabisa.com', required: true })
+  const role = roleSelect('viewer')
+  const form = h('form', { class: 'row' }, email, role, h('button', { class: 'primary' }, 'Invite'))
   form.addEventListener('submit', async e => {
     e.preventDefault()
-    try { await api('POST', '/users', { email: email.value }); email.value = ''; render() } catch (err) { fail(err) }
+    try {
+      await api('POST', '/users', { email: email.value, role: role.value })
+      toast(`Invited ${email.value} as ${role.value}. Send them the dashboard link; they sign in with Google.`)
+      email.value = ''
+      render()
+    } catch (err) { fail(err) }
   })
-  fill(root, h('h1', {}, 'Admins'),
-    h('p', { class: 'muted' }, 'Admins sign in with Google and have full access. Default admins come from ADMIN_EMAILS and can only be changed there.'),
-    form, list)
+
+  fill(root, h('h1', {}, 'Users'),
+    domainsNote,
+    h('ul', { class: 'muted roles' }, ROLES.map(r => h('li', {}, h('strong', {}, r), `: ${ROLE_HELP[r]}`))),
+    h('h2', {}, 'Invite'),
+    h('p', { class: 'muted' }, 'Give someone a role before they sign in.'),
+    form, pendingBox, list)
   await render()
 }
 
@@ -423,11 +512,12 @@ async function route() {
   const hash = location.hash.replace(/^#/, '') || '/'
   const [, section, id] = hash.split('/')
   for (const a of document.querySelectorAll('[data-nav]')) a.classList.toggle('active', a.dataset.nav === (section || 'numbers'))
+  const gate = (min, view) => can(min) ? view(root) : fill(root, h('p', { class: 'error' }, `This page needs the ${min} role.`))
   try {
     if (section === 'numbers' && id) await viewNumber(root, id)
     else if (section === 'runners') await viewRunners(root)
-    else if (section === 'admins') await viewAdmins(root)
-    else if (section === 'activity') await viewActivity(root)
+    else if (section === 'users' || section === 'admins') await gate('admin', viewUsers)
+    else if (section === 'activity') await gate('operator', viewActivity)
     else await viewNumbers(root)
   } catch (e) {
     fill(root, h('p', { class: 'error' }, e.message))
@@ -435,8 +525,12 @@ async function route() {
 }
 
 window.addEventListener('hashchange', route)
-api('GET', '/me').then(me => {
+api('GET', '/me').then(user => {
+  Object.assign(me, user)
   $('#me').textContent = me.email
+  $('#my-role').textContent = me.role
+  $('#my-role').title = ROLE_HELP[me.role]
+  for (const a of document.querySelectorAll('[data-min]')) a.hidden = !can(a.dataset.min)
   connectLive()
   route()
 })
