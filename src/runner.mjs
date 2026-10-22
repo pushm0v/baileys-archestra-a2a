@@ -78,9 +78,16 @@ async function onMessage(raw) {
     console.log(`dashboard sent settings for ${msg.numbers.length} number(s)`)
     await supervisor.sync(msg.numbers)
   } else if (msg.type === 'request') {
+    const name = supervisor.instances.get(msg.numberId)?.config?.name || msg.numberId
+    const started = Date.now()
+    const took = () => `${((Date.now() - started) / 1000).toFixed(1)}s`
+    console.log(`[${name}] dashboard asked for ${msg.action}`)
     try {
-      send({ type: 'response', id: msg.id, ok: true, result: await supervisor.handle(msg.numberId, msg.action, msg.args) })
+      const result = await supervisor.handle(msg.numberId, msg.action, msg.args)
+      console.log(`[${name}] ${msg.action} done in ${took()}${Array.isArray(result) ? ` (${result.length} items)` : ''}`)
+      send({ type: 'response', id: msg.id, ok: true, result })
     } catch (e) {
+      console.error(`[${name}] ${msg.action} failed after ${took()}: ${e.message}`)
       send({ type: 'response', id: msg.id, ok: false, error: e.message })
     }
   }
@@ -99,7 +106,10 @@ function connect() {
     socket.send(JSON.stringify({ type: 'hello', version: VERSION, statuses: supervisor.statuses() }))
     // Plain "ping" text gets an automatic "pong" from the dashboard without waking it up
     pinger = setInterval(() => {
-      if (Date.now() - lastSeen > DEAD_AFTER_MS) return socket.terminate()
+      if (Date.now() - lastSeen > DEAD_AFTER_MS) {
+        console.log(`no reply from the dashboard for ${DEAD_AFTER_MS / 1000}s, reconnecting`)
+        return socket.terminate()
+      }
       socket.send('ping')
     }, PING_MS)
   })
@@ -111,11 +121,12 @@ function connect() {
     console.error(`dashboard refused the connection: HTTP ${res.statusCode}${res.statusCode === 401 ? ' (check RUNNER_TOKEN)' : ''}`)
   })
   socket.on('error', err => console.error('dashboard connection error:', err.message))
-  socket.on('close', () => {
+  socket.on('close', (code, reason) => {
     clearInterval(pinger)
     if (ws === socket) ws = null
     const delay = reconnectDelay(attempt++, { max: 60_000 })
-    console.log(`dashboard connection closed, retrying in ${(delay / 1000).toFixed(1)}s (numbers keep running)`)
+    const why = `code ${code}${reason?.length ? `: ${reason}` : ''}`
+    console.log(`dashboard connection closed (${why}), retrying in ${(delay / 1000).toFixed(1)}s (numbers keep running)`)
     setTimeout(connect, delay)
   })
 }
