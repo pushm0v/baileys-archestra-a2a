@@ -99,7 +99,8 @@ async function reportUnmappedGroup(sock, jid) {
   if (reportedGroups.has(jid)) return
   reportedGroups.add(jid)
   const subject = await sock.groupMetadata(jid).then(m => m.subject).catch(() => null)
-  console.log(`unmapped group ${jid}${subject ? ` "${subject}"` : ''}: add it to ${ROUTES_FILE} to connect an agent`)
+  const where = MANAGED ? 'add a route for it in the dashboard (Pick from groups)' : `add it to ${ROUTES_FILE}`
+  console.log(`unmapped group ${jid}${subject ? ` "${subject}"` : ''}: ${where} to connect an agent`)
 }
 
 async function handleMessage(sock, msg, info, { agent, from }) {

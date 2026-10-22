@@ -288,9 +288,17 @@ async function viewNumber(root, id) {
     routesBox,
     h('div', { class: 'row' },
       h('button', { type: 'button', onclick: () => routesBox.append(routeRow()) }, 'Add route'),
-      !isNew && h('button', { type: 'button', onclick: async () => {
+      !isNew && h('button', { type: 'button', onclick: async e => {
+        // Asking WhatsApp can take a few seconds; show that something is happening
+        const btn = e.currentTarget
+        btn.disabled = true
+        btn.textContent = 'Loading groups…'
+        fill(groupsBox, h('p', { class: 'muted' }, 'Asking WhatsApp for the groups this number is in…'))
         const groups = await action('groups')
-        if (!groups) return
+        btn.disabled = false
+        btn.textContent = 'Pick from groups'
+        if (!groups) return fill(groupsBox)
+        if (!groups.length) return fill(groupsBox, h('p', { class: 'muted' }, 'This number is not in any group yet. Add it to a group from a phone, then try again.'))
         const taken = new Set([...routesBox.querySelectorAll('[name=r_key]')].map(i => i.value))
         fill(groupsBox, h('h4', {}, `Groups this number is in (${groups.length})`),
           ...groups.map(g => h('div', { class: 'row between group' },

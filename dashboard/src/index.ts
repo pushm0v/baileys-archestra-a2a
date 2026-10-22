@@ -357,7 +357,11 @@ app.post('/api/numbers/:id/actions/:action', need('operator'), async c => {
   if (!n) return c.json({ error: 'No such number' }, 404)
   if (!n.runnerId) return c.json({ error: 'Assign this number to a runner first' }, 409)
   const args: Record<string, string> = action === 'pairingCode' ? { phone: String((await c.req.json<{ phone?: unknown }>()).phone ?? '') } : {}
+  const started = Date.now()
   const outcome = await hub(c.env).request(n.runnerId, id, action, args)
+  const log = { message: 'number action', action, numberId: id, runnerId: n.runnerId, ok: outcome.ok, ms: Date.now() - started, ...(!outcome.ok && { error: outcome.error }) }
+  if (outcome.ok) console.log(JSON.stringify(log))
+  else console.error(JSON.stringify(log))
   if (!outcome.ok) return c.json({ error: outcome.error }, outcome.offline ? 409 : 502)
   const result: unknown = JSON.parse(outcome.result)
   // Reading the group list changes nothing, so it isn't audited
