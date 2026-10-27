@@ -68,6 +68,10 @@ before(async () => {
       const msg = body.params.message
       requests.push(msg)
       if (mode === 'unauthorized') { res.statusCode = 401; return res.end('{"error":"unauthorized"}') }
+      // Archestra's answer to a contextId it doesn't have (or that belongs to another agent)
+      if (msg.contextId === 'stale-ctx') {
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'Context not found' } }))
+      }
       const hasRaw = msg.parts.some(p => p.raw !== undefined)
       if (hasRaw && mode === 'reject-raw') {
         return res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'Invalid params: raw' } }))
@@ -130,6 +134,34 @@ test('a 413 falls back without disabling inline files', async () => {
   const agent = createAgentClient({ endpoint, token: 't', timeoutMs: 5000, logger: quiet })
   const { notice } = await agent.ask('c', fileParts)
   assert.match(notice, /couldn't receive the file/)
+  assert.equal(agent.inlineFiles, true)
+})
+
+// A stored conversation from before the number was switched to another agent or token
+function staleStore() {
+  const data = { chat: 'stale-ctx' }
+  return { get: k => data[k], set(k, v) { data[k] = v }, delete(k) { delete data[k] }, data }
+}
+
+test('a stale conversation is dropped and the message retried as a new one', async () => {
+  mode = 'ok'; requests = []
+  const store = staleStore()
+  const agent = createAgentClient({ endpoint, token: 't', store, timeoutMs: 5000, logger: quiet })
+  const { answer } = await agent.ask('chat', [{ text: 'hello' }])
+  assert.equal(answer, 'got 1 parts')
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0].contextId, 'stale-ctx')
+  assert.equal(requests[1].contextId, undefined)
+  assert.equal(store.data.chat, 'ctx-1')
+})
+
+test('a stale conversation with a file keeps the file and inline mode', async () => {
+  mode = 'ok'; requests = []
+  const agent = createAgentClient({ endpoint, token: 't', store: staleStore(), timeoutMs: 5000, logger: quiet })
+  const { answer, notice } = await agent.ask('chat', fileParts)
+  assert.equal(answer, 'got 2 parts')
+  assert.equal(notice, null)
+  assert.equal(requests[1].parts[1].mediaType, 'image/png')
   assert.equal(agent.inlineFiles, true)
 })
 

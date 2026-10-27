@@ -56,7 +56,7 @@ npm start
 
 A QR code prints in the terminal on first run. On the phone, open WhatsApp → **Linked devices** → **Link a device** and scan it. Credentials are saved in `data/auth`, so later runs reconnect without scanning.
 
-Send the linked number a message from an allowlisted phone and the agent replies in the chat. Send `/reset` to start a fresh conversation.
+Send the linked number a message from an allowlisted phone and the agent replies in the chat. Send `/reset` to start a fresh conversation. If Archestra no longer has a chat's conversation ("Context not found", for example after the number is switched to another agent or token), the bridge starts a new one automatically.
 
 ## Configuration
 
