@@ -8,6 +8,9 @@ export class AgentError extends Error {
   constructor(message, { status, code } = {}) { super(message); this.status = status; this.code = code }
   // Request shape rejected (bad params / body), as opposed to auth, not-found or server errors
   get isRejectedRequest() { return [400, 413, 422].includes(this.status) || [-32600, -32602].includes(this.code) }
+  // The stored conversation is gone or belongs to another agent or token (e.g. after the
+  // number was switched to a different agent). Archestra sends it as -32602 too.
+  get isContextNotFound() { return this.code === -32602 && /context not found/i.test(this.message) }
 }
 
 // chat -> contextId map persisted as JSON. One store is shared by all agent clients so they
@@ -38,9 +41,22 @@ export function createAgentClient({ endpoint, token, contextFile, store, namespa
   // In auto mode this flips to false the first time Archestra rejects an inline file part
   let inlineFiles = mediaInline !== 'never'
 
+  // Sends with the chat's stored conversation. If Archestra no longer knows it, forgets it
+  // and starts a new conversation instead of failing every message from that chat.
   async function call(chatId, parts) {
-    const message = { messageId: randomUUID(), role: 'ROLE_USER', parts }
     const contextId = contexts.get(keyOf(chatId))
+    try {
+      return await send(chatId, parts, contextId)
+    } catch (err) {
+      if (!contextId || !(err instanceof AgentError) || !err.isContextNotFound) throw err
+      logger.warn?.(`Archestra no longer has conversation ${contextId} for ${chatId}, starting a new one`)
+      contexts.delete(keyOf(chatId))
+      return send(chatId, parts, undefined)
+    }
+  }
+
+  async function send(chatId, parts, contextId) {
+    const message = { messageId: randomUUID(), role: 'ROLE_USER', parts }
     if (contextId) message.contextId = contextId
 
     let res
