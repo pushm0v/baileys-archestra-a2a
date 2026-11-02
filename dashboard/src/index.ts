@@ -4,7 +4,8 @@ import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
 import { HTTPException } from 'hono/http-exception'
 import { createMiddleware } from 'hono/factory'
-import { configAdmins, allowedDomains, domainAllowed, loginDomainAllowed, roleOf, isRole, atLeast, readSession, startLogin, finishLogin, startSession, endSession, LoginError, type AppEnv, type Role } from './auth'
+import { configAdmins, allowedDomains, domainAllowed, loginDomainAllowed, roleOf, isRole, atLeast, readSession, startLogin, finishLogin, startSession, endSession, providerLabel, LoginError, type AppEnv, type Identity, type Role } from './auth'
+import { configuredProviders, parseRoleMapping, mappedRole } from './providers'
 import { randomToken, sha256Hex } from './crypto'
 import { listNumbers, getNumber, saveNumber, audit } from './db'
 import { HUB_NAME } from './hub'
@@ -50,28 +51,75 @@ const page = (title: string, body: string) => `<!doctype html><html lang="en"><h
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!)
 
-app.get('/auth/login', c => startLogin(c))
+// The login page lists the providers configured in wrangler.jsonc
+app.get('/login', c => {
+  const providers = configuredProviders(c.env)
+  const buttons = providers.map((p, i) => `<a class="button ${i === 0 ? 'primary ' : ''}block" href="/auth/login/${p.id}">Sign in with ${escapeHtml(p.label)}</a>`).join('')
+  return c.html(page('Sign in · WhatsApp Bridge', `<h1>WhatsApp Bridge</h1>
+    <p class="muted">Manage the WhatsApp numbers connected to your Archestra agents.</p>
+    ${buttons || '<p class="error">No sign-in method is set up. Set GOOGLE_CLIENT_ID or ZITADEL_ISSUER and ZITADEL_CLIENT_ID in wrangler.jsonc.</p>'}`))
+})
+
+// /auth/login picks the only provider, or shows the choice
+app.get('/auth/login', c => {
+  const providers = configuredProviders(c.env)
+  return providers.length === 1 ? startLogin(c, providers[0].id) : c.redirect('/login')
+})
+
+app.get('/auth/login/:provider', async c => {
+  const provider = configuredProviders(c.env).find(p => p.id === c.req.param('provider'))
+  if (!provider) return c.html(page('Sign-in failed', `<h1>Sign-in failed</h1><p>That sign-in method is not enabled.</p><p><a class="button" href="/login">Back</a></p>`), 404)
+  try {
+    return await startLogin(c, provider.id)
+  } catch (e) {
+    const message = e instanceof LoginError ? e.message : `${provider.label} sign-in is not available right now.`
+    console.error(JSON.stringify({ message: 'login start failed', provider: provider.id, error: String(e) }))
+    return c.html(page('Sign-in failed', `<h1>Sign-in failed</h1><p>${escapeHtml(message)}</p><p><a class="button" href="/login">Back</a></p>`), 502)
+  }
+})
 
 app.get('/auth/callback', async c => {
-  let email: string, hd: string | null
+  let identity: Identity
   try {
-    ({ email, hd } = await finishLogin(c))
+    identity = await finishLogin(c)
   } catch (e) {
-    const message = e instanceof LoginError ? e.message : 'Google sign-in could not be verified.'
+    const message = e instanceof LoginError ? e.message : 'Sign-in could not be verified.'
     if (!(e instanceof LoginError)) console.error(JSON.stringify({ message: 'login verification failed', error: String(e) }))
-    return c.html(page('Sign-in failed', `<h1>Sign-in failed</h1><p>${escapeHtml(message)}</p><p><a class="button" href="/auth/login">Try again</a></p>`), 400)
+    return c.html(page('Sign-in failed', `<h1>Sign-in failed</h1><p>${escapeHtml(message)}</p><p><a class="button" href="/login">Try again</a></p>`), 400)
   }
-  const another = '<p><a class="button" href="/auth/login">Use another Google account</a></p>'
+  const { email, provider } = identity
+  const label = providerLabel(c.env, provider)
+  const another = `<p><a class="button" href="/login">Use another account</a></p>`
   const isConfigAdmin = configAdmins(c.env).includes(email)
 
-  if (!isConfigAdmin && !loginDomainAllowed(c.env, email, hd)) {
-    await audit(c.env.DB, email, 'login.denied', null, { reason: 'domain' })
+  // Google: a Workspace domain must match the hd claim. Zitadel is your own identity provider,
+  // so its verified email is checked against ALLOWED_DOMAINS directly.
+  const domainOk = provider === 'google' ? loginDomainAllowed(c.env, email, identity.hd) : domainAllowed(c.env, email)
+  if (!isConfigAdmin && !domainOk) {
+    await audit(c.env.DB, email, 'login.denied', null, { reason: 'domain', provider })
     const domains = allowedDomains(c.env).map(d => `@${d}`).join(', ')
-    return c.html(page('No access', `<h1>No access</h1><p>Only ${escapeHtml(domains)} Google accounts can sign in to this dashboard.
-      <strong>${escapeHtml(email)}</strong> is not one of them.</p>${another}`), 403)
+    return c.html(page('No access', `<h1>No access</h1><p>Only ${escapeHtml(domains)} accounts can sign in to this dashboard.
+      <strong>${escapeHtml(email)}</strong> (${escapeHtml(label)}) is not one of them.</p>${another}`), 403)
   }
 
-  if (!isConfigAdmin) {
+  // Zitadel project roles decide the dashboard role when ZITADEL_ROLE_MAPPING is set
+  let mapping: ReturnType<typeof parseRoleMapping> = null
+  try { mapping = provider === 'zitadel' ? parseRoleMapping(c.env.ZITADEL_ROLE_MAPPING) : null } catch (e) {
+    console.error(JSON.stringify({ message: 'bad ZITADEL_ROLE_MAPPING', error: String(e) }))
+    return c.html(page('Sign-in failed', `<h1>Sign-in failed</h1><p>${escapeHtml(String((e as Error).message))}</p>`), 500)
+  }
+  if (!isConfigAdmin && mapping) {
+    const now = Date.now()
+    const role = mappedRole(mapping, identity.roles)
+    await c.env.DB.prepare(`INSERT INTO users (email, role, invited_by, created_at, updated_by, updated_at, last_login_at) VALUES (?, ?, 'zitadel', ?, 'zitadel', ?, ?)
+      ON CONFLICT (email) DO UPDATE SET role = excluded.role, updated_by = 'zitadel', updated_at = excluded.updated_at, last_login_at = excluded.last_login_at`)
+      .bind(email, role, now, now, now).run()
+    if (!role) {
+      await audit(c.env.DB, email, 'login.denied', null, { reason: 'no zitadel role', provider, roles: identity.roles })
+      return c.html(page('No access', `<h1>No access</h1><p>You are signed in as <strong>${escapeHtml(email)}</strong>,
+        but your ${escapeHtml(label)} account has none of the roles that give access to this dashboard. Ask an admin to grant you one in Zitadel, then sign in again.</p>${another}`), 403)
+    }
+  } else if (!isConfigAdmin) {
     const now = Date.now()
     // With ALLOWED_DOMAINS set, anyone from those domains is recorded so an admin can give them a role.
     // Without it, only users an admin has invited are recorded.
@@ -93,7 +141,7 @@ app.get('/auth/callback', async c => {
       but you don't have a role yet. Ask a dashboard admin to give you one on the <em>Users</em> page, then sign in again.</p>${another}`), 403)
   }
   await startSession(c, email)
-  await audit(c.env.DB, email, 'login', null, { role })
+  await audit(c.env.DB, email, 'login', null, { role, provider })
   return c.redirect('/')
 })
 
@@ -513,7 +561,7 @@ app.all('/api/*', c => c.json({ error: 'Not found' }, 404))
 // ---------- Static app ----------
 
 // Reachable without signing in (the assets binding serves /login.html at /login)
-const PUBLIC_ASSETS = new Set(['/login', '/login.html', '/style.css', '/favicon.svg'])
+const PUBLIC_ASSETS = new Set(['/style.css', '/favicon.svg'])
 
 app.get('*', async c => {
   const path = new URL(c.req.url).pathname

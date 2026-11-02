@@ -6,24 +6,35 @@
 
   "vars": {
     // Default admins: always allowed to sign in, and can't be removed from the dashboard.
-    // Comma-separated Google account emails. More admins can be added in the dashboard.
+    // Comma-separated emails (Google or Zitadel). More admins can be added in the dashboard.
     "ADMIN_EMAILS": "you@example.com",
-    // Only Google accounts from these email domains can sign in (comma-separated, e.g. "kitabisa.com").
+    // Only accounts with an email from these domains can sign in (comma-separated, e.g. "kitabisa.com").
     // Anyone from them who signs in appears on the Users page, waiting for an admin to give them a role.
     // Leave empty to allow any domain; then only users an admin has invited can sign in.
     // ADMIN_EMAILS can always sign in.
     "ALLOWED_DOMAINS": "kitabisa.com",
-    // OAuth client ID from Google Cloud Console > APIs & Services > Credentials (not secret)
+    // Sign-in providers: set up Google, Zitadel, or both. The login page offers the ones configured here.
+    // OAuth client ID from Google Cloud Console > APIs & Services > Credentials (not secret). Empty turns Google off.
     "GOOGLE_CLIENT_ID": "",
+    // Zitadel instance URL, e.g. "https://auth.example.com" (the issuer). Empty turns Zitadel off.
+    "ZITADEL_ISSUER": "",
+    // Client ID of the Zitadel web application (not secret)
+    "ZITADEL_CLIENT_ID": "",
+    // Button text on the login page, e.g. "Kitabisa SSO"
+    "ZITADEL_LABEL": "Zitadel",
+    // Optional: let Zitadel project roles decide dashboard roles, e.g. "admin=wa-admin, operator=wa-operator, viewer=wa-viewer".
+    // Checked at every Zitadel sign-in. Empty: Zitadel users get roles on the Users page, like Google users.
+    "ZITADEL_ROLE_MAPPING": "",
     // Recorded WhatsApp messages older than this many days are deleted every night. "0" keeps them forever.
     "MESSAGE_RETENTION_DAYS": "0"
   },
   // Runs the message retention cleanup once a day
   "triggers": { "crons": ["17 3 * * *"] },
   // Set with `wrangler secret put NAME` (or in .dev.vars locally):
-  //   GOOGLE_CLIENT_SECRET  OAuth client secret
-  //   SESSION_SECRET        random string used to sign session cookies (e.g. openssl rand -base64 32)
-  "secrets": { "required": ["GOOGLE_CLIENT_SECRET", "SESSION_SECRET"] },
+  //   SESSION_SECRET         random string used to sign session cookies (e.g. openssl rand -base64 32)
+  //   GOOGLE_CLIENT_SECRET   Google OAuth client secret, when Google sign-in is on
+  //   ZITADEL_CLIENT_SECRET  only for a Zitadel app with the "Basic" auth method; leave unset for a "PKCE" app
+  "secrets": { "required": ["SESSION_SECRET"] },
 
   "d1_databases": [
     {

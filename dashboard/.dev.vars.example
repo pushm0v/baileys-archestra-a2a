@@ -1,3 +1,6 @@
 # Copy to .dev.vars for `npm run dev` (never commit .dev.vars)
-GOOGLE_CLIENT_SECRET=
 SESSION_SECRET=
+# When Google sign-in is on (GOOGLE_CLIENT_ID set)
+GOOGLE_CLIENT_SECRET=
+# Only for a Zitadel app with the "Basic" auth method; leave out for a "PKCE" app
+# ZITADEL_CLIENT_SECRET=

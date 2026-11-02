@@ -16,7 +16,7 @@ describe('sign-in', () => {
   })
 
   it('starts Google sign-in with PKCE and a nonce', async () => {
-    const res = await call('GET', '/auth/login', { email: null })
+    const res = await call('GET', '/auth/login/google', { email: null })
     expect(res.status).toBe(302)
     const url = new URL(res.headers.get('Location')!)
     expect(url.origin).toBe('https://accounts.google.com')
@@ -40,7 +40,7 @@ describe('sign-in', () => {
     })
 
     async function signIn(email: string, { verified = true, nonceOverride, hd = email.toLowerCase().endsWith('@example.com') ? 'example.com' : undefined }: { verified?: boolean, nonceOverride?: string, hd?: string } = {}) {
-      const start = await call('GET', '/auth/login', { email: null })
+      const start = await call('GET', '/auth/login/google', { email: null })
       const google = new URL(start.headers.get('Location')!)
       const oauthCookie = start.headers.get('Set-Cookie')!.split(';')[0]
       const idToken = await new SignJWT({ email, email_verified: verified, nonce: nonceOverride ?? google.searchParams.get('nonce'), ...(hd && { hd }) })
@@ -105,7 +105,7 @@ describe('sign-in', () => {
     })
 
     it('asks Google for accounts of the one allowed domain', async () => {
-      const res = await call('GET', '/auth/login', { email: null })
+      const res = await call('GET', '/auth/login/google', { email: null })
       expect(new URL(res.headers.get('Location')!).searchParams.get('hd')).toBe('example.com')
     })
 
