@@ -467,8 +467,8 @@ async function viewUsers(root) {
   const render = async () => {
     const { users, allowedDomains } = await api('GET', '/users')
     fill(domainsNote, allowedDomains.length
-      ? ['Only ', h('strong', {}, allowedDomains.map(d => `@${d}`).join(', ')), ' Google accounts can sign in (ALLOWED_DOMAINS). Anyone from them who signs in shows up below, waiting for a role.']
-      : 'Any Google account can be invited (ALLOWED_DOMAINS is empty). Only invited users can sign in.')
+      ? ['Only ', h('strong', {}, allowedDomains.map(d => `@${d}`).join(', ')), ' accounts can sign in (ALLOWED_DOMAINS). Anyone from them who signs in shows up below, waiting for a role.']
+      : 'Any account can be invited (ALLOWED_DOMAINS is empty). Only invited users can sign in.')
 
     const pending = users.filter(u => u.status === 'pending')
     fill(pendingBox, pending.length > 0 && [
@@ -510,7 +510,7 @@ async function viewUsers(root) {
     e.preventDefault()
     try {
       await api('POST', '/users', { email: email.value, role: role.value })
-      toast(`Invited ${email.value} as ${role.value}. Send them the dashboard link; they sign in with Google.`)
+      toast(`Invited ${email.value} as ${role.value}. Send them the dashboard link.`)
       email.value = ''
       render()
     } catch (err) { fail(err) }

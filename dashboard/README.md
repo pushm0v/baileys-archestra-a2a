@@ -1,11 +1,11 @@
 # WhatsApp Bridge dashboard
 
-A Cloudflare Worker for running many WhatsApp numbers with the bridge: add numbers, link them by QR or pairing code, set their agents and group routes, and watch their status and logs live. People sign in with Google, limited to the email domains you allow, and each has a role: viewer, operator or admin.
+A Cloudflare Worker for running many WhatsApp numbers with the bridge: add numbers, link them by QR or pairing code, set their agents and group routes, and watch their status and logs live. People sign in with Google, Zitadel, or either, limited to the email domains you allow, and each has a role: viewer, operator or admin.
 
 The WhatsApp sessions don't run on Cloudflare. They run in **runners**, which are the bridge's Docker image started with `node src/runner.mjs` on your own server or Kubernetes. A runner starts one bridge process per number and dials out to the dashboard over a WebSocket, so it needs no open ports.
 
 ```
-Browser ──Google sign-in──▶ Worker (API + UI)
+Browser ──Google / Zitadel sign-in──▶ Worker (API + UI)
    ▲                          ├─ D1: users, runners, numbers, routes, audit log
    │ live status, QR codes    ├─ D1: chats, messages, human agents, handoffs, MCP keys
    │                          ├─ /mcp ◀── Archestra agents (human follow-up tool)
@@ -20,9 +20,11 @@ Browser ──Google sign-in──▶ Worker (API + UI)
 
 ## Setup
 
-Requirements: a Cloudflare account, Node.js 22+, and a Google Cloud project for the sign-in client.
+Requirements: a Cloudflare account, Node.js 22+, and a sign-in client in Google Cloud, in Zitadel, or in both. The login page shows a button for each one you configure.
 
-### 1. Google sign-in client
+### 1. Sign-in clients
+
+#### Google
 
 In Google Cloud Console → **APIs & Services**:
 
@@ -31,6 +33,17 @@ In Google Cloud Console → **APIs & Services**:
 3. **Authorized redirect URIs**: add `https://<your worker domain>/auth/callback`, and `http://localhost:8787/auth/callback` for local development.
 
 Keep the client ID and client secret.
+
+#### Zitadel
+
+In the Zitadel console, in the project you want to use (or a new one):
+
+1. **New application** → type **Web**, authentication method **PKCE** (recommended; no secret to store) or **Code** (gives a client secret, sent with HTTP Basic auth).
+2. **Redirect URIs**: `https://<your worker domain>/auth/callback`, and `http://localhost:8787/auth/callback` with **Development mode** on for local testing.
+3. Keep the **Client ID** (and the client secret, for a Code app). The issuer is your instance URL, e.g. `https://auth.example.com`.
+4. Optional, to manage dashboard roles in Zitadel: in the project, create roles (e.g. `wa-admin`, `wa-operator`, `wa-viewer`), grant them to people under **Authorizations**, and turn on **Assert Roles on Authentication** in the project settings. See [Roles from Zitadel](#roles-from-zitadel).
+
+The dashboard reads Zitadel's endpoints from `<issuer>/.well-known/openid-configuration`, asks for the `openid email profile urn:zitadel:iam:org:projects:roles` scopes, and gets the email and roles from the ID token, or from userinfo when the app doesn't put them in the token. A user's email must be verified in Zitadel.
 
 ### 2. Configure and deploy
 
@@ -42,16 +55,18 @@ npx wrangler d1 create whatsapp-dashboard   # paste the database_id into wrangle
 
 Edit `wrangler.jsonc`:
 
-- `ADMIN_EMAILS`: the default admins' Google emails, comma-separated. They can always sign in and can't be changed from the dashboard. Everyone else gets a role on the **Users** page.
+- `ADMIN_EMAILS`: the default admins' emails, comma-separated. They can always sign in and can't be changed from the dashboard. Everyone else gets a role on the **Users** page.
 - `ALLOWED_DOMAINS`: the email domains that may sign in, comma-separated (e.g. `kitabisa.com`). Leave it empty to allow any domain; then only people an admin has invited can sign in. See [Users and roles](#users-and-roles).
-- `GOOGLE_CLIENT_ID`: from step 1.
+- Google: `GOOGLE_CLIENT_ID` from step 1. Leave it empty to turn Google sign-in off.
+- Zitadel: `ZITADEL_ISSUER` (e.g. `https://auth.example.com`) and `ZITADEL_CLIENT_ID`. Optional: `ZITADEL_LABEL` for the button text (e.g. `Kitabisa SSO`), and `ZITADEL_ROLE_MAPPING` (see [Roles from Zitadel](#roles-from-zitadel)). Leave `ZITADEL_ISSUER` empty to turn Zitadel sign-in off.
 
 Then:
 
 ```bash
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-npx wrangler secret put SESSION_SECRET        # e.g. the output of: openssl rand -base64 32
-npm run deploy                                # applies D1 migrations, then deploys
+npx wrangler secret put SESSION_SECRET          # e.g. the output of: openssl rand -base64 32
+npx wrangler secret put GOOGLE_CLIENT_SECRET    # with Google sign-in
+npx wrangler secret put ZITADEL_CLIENT_SECRET   # only for a Zitadel "Code" app; skip it for PKCE
+npm run deploy                                  # applies D1 migrations, then deploys
 ```
 
 To deploy from GitHub instead, use the manual **Deploy dashboard** workflow (`.github/workflows/deploy-dashboard.yml`), which needs the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets.
@@ -144,16 +159,33 @@ The human answers the customer from their own WhatsApp. Sending messages to peop
 
 There are two ways to give someone access, both on the **Users** page (admins only):
 
-- **They sign in first.** With `ALLOWED_DOMAINS` set, anyone from those domains can sign in with Google. They see "Waiting for access" and show up under **Waiting for a role**; pick a role and press **Give access**, and they can sign in.
+- **They sign in first.** With `ALLOWED_DOMAINS` set, anyone from those domains can sign in. They see "Waiting for access" and show up under **Waiting for a role**; pick a role and press **Give access**, and they can sign in.
 - **Invite them.** Enter their email and a role. They can sign in straight away; send them the dashboard link (the dashboard doesn't send email).
 
 Change a role from the list, **Revoke** to take access away (they stay listed as waiting), or **Remove** to delete them. Changes apply at once: open tabs reload with the new role, or are signed out. You can't change your own role, and default admins (`ADMIN_EMAILS`) can only be changed in `wrangler.jsonc`.
 
-For a Google Workspace domain such as `kitabisa.com`, sign-in also checks Google's hosted-domain (`hd`) claim, so a personal Google account registered with a `@kitabisa.com` address is refused. To allow personal Gmail accounts, add `gmail.com`. Removing a domain from `ALLOWED_DOMAINS` takes access away from its users at once (shown as **Domain not allowed**). Default admins can always sign in, whatever their domain.
+For a Google Workspace domain such as `kitabisa.com`, sign-in also checks Google's hosted-domain (`hd`) claim, so a personal Google account registered with a `@kitabisa.com` address is refused. To allow personal Gmail accounts, add `gmail.com`. Removing a domain from `ALLOWED_DOMAINS` takes access away from its users at once (shown as **Domain not allowed**). Default admins can always sign in, whatever their domain. Zitadel has no such claim: it is your own identity provider, so the verified email from Zitadel is checked against `ALLOWED_DOMAINS` directly.
+
+A person is identified by their email, so someone with the same email in Google and Zitadel is one user with one role, whichever button they use.
+
+### Roles from Zitadel
+
+Without `ZITADEL_ROLE_MAPPING`, people who sign in with Zitadel get their role on the **Users** page, like Google users. To manage dashboard roles in Zitadel instead, map Zitadel project roles to dashboard roles in `wrangler.jsonc`:
+
+```jsonc
+"ZITADEL_ROLE_MAPPING": "admin=wa-admin, operator=wa-operator, viewer=wa-viewer, viewer=staff"
+```
+
+- Each entry is `<dashboard role>=<Zitadel role key>`. Several Zitadel roles can give the same dashboard role, and someone with several gets the highest.
+- The role is set at every Zitadel sign-in (shown as *role set by zitadel* on the Users page). Someone with none of the mapped roles is refused, and any role they had is removed.
+- A role taken away in Zitadel applies at their next sign-in. Sessions last up to 12 hours; to cut someone off at once, also use **Revoke** on the Users page.
+- Changing a mapped user's role on the Users page only lasts until they sign in with Zitadel again.
+- Default admins (`ADMIN_EMAILS`) don't need a Zitadel role.
+- With mapping on, people don't need an invite when `ALLOWED_DOMAINS` is empty: their Zitadel role is what lets them in.
 
 ## Security notes
 
-- Sign-in uses Google's OpenID Connect code flow with PKCE, `state` and `nonce`. The ID token's signature, issuer, audience and `email_verified` are checked. The email must be in `ADMIN_EMAILS`, or be from `ALLOWED_DOMAINS` (with a matching `hd` claim for Workspace domains) and have a role.
+- Sign-in uses the OpenID Connect code flow with PKCE, `state` and `nonce`, for both Google and Zitadel. The ID token's signature (against the provider's published keys), issuer, audience, nonce and `email_verified` are checked. Which provider a callback belongs to comes from the signed sign-in cookie, not the URL. Zitadel's discovery document must name the configured issuer, and userinfo is only used when it describes the same user (`sub`) as the ID token. The email must be in `ADMIN_EMAILS`, or be from `ALLOWED_DOMAINS` (with a matching `hd` claim for Workspace domains) and have a role.
 - Sessions are HMAC-signed `__Host-` cookies (`HttpOnly`, `Secure`, `SameSite=Lax`) valid for 12 hours. Each user's role is re-checked on every request, so a role change or removal takes effect at once, and their open live connections are closed. Every API route checks the role on the server; the UI only hides what a role can't use.
 - Requests that change anything, and the live WebSocket, must come from the dashboard's own origin. Pages are served with a strict Content-Security-Policy.
 - Runner tokens are stored only as SHA-256 hashes. A runner can only report on numbers assigned to it.
