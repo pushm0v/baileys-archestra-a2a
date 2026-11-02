@@ -48,6 +48,8 @@ export function bridgeEnv(number, env, dataRoot) {
     ALLOWED_NUMBERS: (number.allowedNumbers || []).join(','),
     DATA_DIR: path.join(dataRoot, number.id),
     ROUTES_JSON: JSON.stringify(routes),
+    RECORD_MESSAGES: number.recordMessages === false ? '0' : '1',
+    HANDOFF_ENABLED: number.handoff ? '1' : '0',
     ...(number.mediaTypes && { MEDIA_TYPES: number.mediaTypes.join(',') }),
     ...(number.maxMediaMb && { MAX_MEDIA_MB: String(number.maxMediaMb) }),
     ...(number.mediaInline && { MEDIA_INLINE: number.mediaInline }),

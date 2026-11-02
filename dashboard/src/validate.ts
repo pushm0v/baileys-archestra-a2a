@@ -30,7 +30,20 @@ export type NumberInput = {
   mediaInline: (typeof MEDIA_INLINE)[number] | null
   agentTimeoutMs: number | null
   routes: RouteInput[]
+  recordMessages: boolean
+  handoffEnabled: boolean
+  handoffPauseMinutes: number | null
+  humanAgents: HumanAgentInput[]
 }
+
+export type HumanAgentInput = {
+  name: string
+  phone: string
+  topics: string[]
+  onDuty: boolean
+}
+
+export const MAX_HUMAN_AGENTS = 50
 
 export class ValidationError extends Error {
   constructor(public errors: string[]) { super(errors.join('; ')) }
@@ -113,6 +126,35 @@ function route(r: unknown, i: number, errors: string[]): RouteInput | null {
   }
 }
 
+function bool(o: Obj, key: string, errors: string[], where: string, fallback: boolean): boolean {
+  const v = o[key]
+  if (blank(v)) return fallback
+  if (typeof v !== 'boolean') { errors.push(`${where}${key} must be true or false`); return fallback }
+  return v
+}
+
+// Topics are matched case-insensitively against the topic the agent passes
+export const normalizeTopic = (t: string) => t.trim().toLowerCase().replace(/\s+/g, ' ')
+
+function humanAgent(a: unknown, i: number, errors: string[]): HumanAgentInput | null {
+  const where = `human agent ${i + 1}: `
+  if (!isObj(a)) { errors.push(`${where}must be an object`); return null }
+  const phone = str(a, 'phone', errors, where, { required: true, max: 25 })?.replace(/^\+/, '') ?? ''
+  if (phone && !PHONE.test(phone)) errors.push(`${where}phone must be digits with country code (no +, spaces or dashes)`)
+  let topics: string[] = []
+  if (!blank(a.topics)) {
+    if (!Array.isArray(a.topics) || a.topics.some(t => typeof t !== 'string')) errors.push(`${where}topics must be a list of words`)
+    else topics = [...new Set((a.topics as string[]).map(normalizeTopic).filter(Boolean))]
+    if (topics.some(t => t.length > 40)) errors.push(`${where}each topic must be at most 40 characters`)
+  }
+  return {
+    name: str(a, 'name', errors, where, { required: true, max: 80 }) ?? '',
+    phone,
+    topics,
+    onDuty: bool(a, 'onDuty', errors, where, true),
+  }
+}
+
 export function parseNumber(body: unknown): NumberInput {
   const errors: string[] = []
   if (!isObj(body)) throw new ValidationError(['body must be a JSON object'])
@@ -129,6 +171,13 @@ export function parseNumber(body: unknown): NumberInput {
   const dupes = keys.filter((k, i) => k && keys.indexOf(k) !== i)
   if (dupes.length) errors.push(`duplicate route keys: ${[...new Set(dupes)].join(', ')}`)
   if (!blank(body.enabled) && typeof body.enabled !== 'boolean') errors.push('enabled must be true or false')
+  const agentsRaw = body.humanAgents ?? []
+  if (!Array.isArray(agentsRaw)) errors.push('humanAgents must be a list')
+  else if (agentsRaw.length > MAX_HUMAN_AGENTS) errors.push(`at most ${MAX_HUMAN_AGENTS} human agents per number`)
+  const humanAgents = (Array.isArray(agentsRaw) ? agentsRaw : []).map((a, i) => humanAgent(a, i, errors)).filter((a): a is HumanAgentInput => a !== null)
+  const phonesSeen = humanAgents.map(a => a.phone)
+  const dupePhones = phonesSeen.filter((p, i) => p && phonesSeen.indexOf(p) !== i)
+  if (dupePhones.length) errors.push(`human agent phone listed twice: ${[...new Set(dupePhones)].join(', ')}`)
 
   const input: NumberInput = {
     name: str(body, 'name', errors, '', { required: true, max: 80 }) ?? '',
@@ -143,6 +192,10 @@ export function parseNumber(body: unknown): NumberInput {
     mediaInline: oneOf(body, 'mediaInline', MEDIA_INLINE, errors, ''),
     agentTimeoutMs: int(body, 'agentTimeoutMs', errors, '', 1000, 3_600_000),
     routes,
+    recordMessages: bool(body, 'recordMessages', errors, '', true),
+    handoffEnabled: bool(body, 'handoffEnabled', errors, '', false),
+    handoffPauseMinutes: int(body, 'handoffPauseMinutes', errors, '', 0, 7 * 24 * 60),
+    humanAgents,
   }
   if (errors.length) throw new ValidationError(errors)
   return input

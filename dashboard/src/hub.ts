@@ -9,6 +9,7 @@
 
 import { DurableObject } from 'cloudflare:workers'
 import { runnerPayload } from './db'
+import { cleanItem, storeMessages, MAX_ITEMS_PER_BATCH, type MessageItem } from './conversations'
 
 export const HUB_NAME = 'global'
 const REQUEST_TIMEOUT_MS = 35_000
@@ -39,13 +40,16 @@ type RunnerMessage =
   | { type: 'activity', numberId: string, at: number, count: number }
   | { type: 'log', numberId: string, stream: string, line: string, at: number }
   | { type: 'removed', numberId: string }
+  // Recorded messages, possibly for several numbers. Acknowledged once stored, so the runner can resend on a drop.
+  | { type: 'messages', batch: string, items: unknown[] }
   | { type: 'response', id: string, ok: boolean, result?: unknown, error?: string }
 
 // result is JSON text, so any shape the runner returns crosses the RPC boundary intact
 export type RequestOutcome = { ok: true, result: string } | { ok: false, offline?: boolean, error: string }
 
-// A QR code lets whoever scans it link their own phone, so viewers never receive them
-const seesQr = (role: string) => role === 'operator' || role === 'admin'
+// A QR code lets whoever scans it link their own phone, and conversations hold customer data,
+// so viewers never receive either
+const isOperator = (role: string) => role === 'operator' || role === 'admin'
 
 export class Hub extends DurableObject<Env> {
   private pending = new Map<string, { resolve: (v: unknown) => void, reject: (e: Error) => void, timer: ReturnType<typeof setTimeout> }>()
@@ -83,7 +87,7 @@ export class Hub extends DurableObject<Env> {
       const role = request.headers.get('X-Hub-Role')!
       this.ctx.acceptWebSocket(server, ['browser', `browser:${email}`])
       server.serializeAttachment({ kind: 'browser', email, exp, role } satisfies Attachment)
-      server.send(JSON.stringify(this.snapshot(seesQr(role))))
+      server.send(JSON.stringify(this.snapshot(isOperator(role))))
     } else {
       return new Response('unknown connection kind', { status: 400 })
     }
@@ -137,6 +141,7 @@ export class Hub extends DurableObject<Env> {
       else p.reject(new Error(msg.error || 'runner error'))
       return
     }
+    if (msg.type === 'messages') return this.onMessages(runnerId, ws, msg)
     if (msg.type === 'hello') {
       this.owners = null
       for (const s of msg.statuses ?? []) {
@@ -158,7 +163,7 @@ export class Hub extends DurableObject<Env> {
     } else if (msg.type === 'qr') {
       if (msg.svg) this.ctx.storage.sql.exec('INSERT OR REPLACE INTO qr (number_id, svg) VALUES (?, ?)', id, msg.svg)
       else this.ctx.storage.sql.exec('DELETE FROM qr WHERE number_id = ?', id)
-      this.broadcast({ type: 'qr', numberId: id, svg: msg.svg }, { qr: true })
+      this.broadcast({ type: 'qr', numberId: id, svg: msg.svg }, { operatorsOnly: true })
     } else if (msg.type === 'log') {
       const line = { stream: msg.stream, line: String(msg.line).slice(0, 2000), at: msg.at }
       const sql = this.ctx.storage.sql
@@ -168,6 +173,22 @@ export class Hub extends DurableObject<Env> {
     } else if (msg.type === 'removed') {
       this.ctx.storage.sql.exec('DELETE FROM qr WHERE number_id = ?', id)
     }
+  }
+
+  private async onMessages(runnerId: string, ws: WebSocket, msg: Extract<RunnerMessage, { type: 'messages' }>) {
+    const items: MessageItem[] = []
+    let dropped = 0
+    for (const raw of (Array.isArray(msg.items) ? msg.items : []).slice(0, MAX_ITEMS_PER_BATCH)) {
+      const item = cleanItem(raw)
+      if (item && await this.ownerOf(item.numberId) === runnerId) items.push(item)
+      else dropped++
+    }
+    const failed = await storeMessages(this.env.DB, items)
+    if (dropped || failed) console.warn(JSON.stringify({ message: 'messages not stored', runnerId, dropped, failed }))
+    // Acked even when some failed: resending a message D1 refused would fail the same way
+    ws.send(JSON.stringify({ type: 'messages_ack', batch: msg.batch }))
+    const chats = new Map(items.map(m => [`${m.numberId} ${m.jid}`, m]))
+    for (const m of chats.values()) this.broadcast({ type: 'chat', numberId: m.numberId, jid: m.jid, at: m.at }, { operatorsOnly: true })
   }
 
   private readLive(numberId: string): LiveStatus | null {
@@ -205,14 +226,14 @@ export class Hub extends DurableObject<Env> {
     return { type: 'snapshot', onlineRunners: this.onlineRunners(), live, qrs, logs }
   }
 
-  private broadcast(msg: object, { qr = false } = {}) {
+  private broadcast(msg: object, { operatorsOnly = false } = {}) {
     const data = JSON.stringify(msg)
     const now = Date.now()
     for (const ws of this.ctx.getWebSockets('browser')) {
       const att = ws.deserializeAttachment() as Attachment
       // The tab's sign-in has expired: stop streaming to it
       if (att.kind === 'browser' && att.exp <= now) { ws.close(4401, 'session expired'); continue }
-      if (qr && att.kind === 'browser' && !seesQr(att.role)) continue
+      if (operatorsOnly && att.kind === 'browser' && !isOperator(att.role)) continue
       try { ws.send(data) } catch { /* closing */ }
     }
   }
@@ -239,7 +260,7 @@ export class Hub extends DurableObject<Env> {
 
   // Send a command to a runner and wait for its answer. Never throws: failures come back as
   // { ok: false, error }, since errors crossing the RPC boundary lose their type.
-  async request(runnerId: string, numberId: string, action: string, args: Record<string, string> = {}): Promise<RequestOutcome> {
+  async request(runnerId: string, numberId: string, action: string, args: Record<string, unknown> = {}): Promise<RequestOutcome> {
     const ws = this.ctx.getWebSockets(`runner:${runnerId}`).find(s => s.readyState === WebSocket.OPEN)
     if (!ws) return { ok: false, offline: true, error: 'The runner for this number is offline' }
     const id = crypto.randomUUID()

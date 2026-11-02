@@ -85,6 +85,9 @@ export class Instance {
       this.emit({ type: 'qr', numberId: this.id, qr: msg.qr })
     } else if (msg?.type === 'activity') {
       this.emit({ type: 'activity', numberId: this.id, at: msg.at })
+    } else if (msg?.type === 'message') {
+      const { type, ...item } = msg
+      this.emit({ type: 'message', numberId: this.id, item })
     } else if (msg?.type === 'response') {
       const p = this.pending.get(msg.id)
       if (!p) return
@@ -140,7 +143,7 @@ export class Instance {
     if (this.status.state === 'connected') await this.request('logout').catch(() => {})
     await this.stop()
     fs.rmSync(path.join(this.dir, 'auth'), { recursive: true, force: true })
-    fs.rmSync(path.join(this.dir, 'contexts.json'), { force: true })
+    for (const f of ['contexts.json', 'paused.json']) fs.rmSync(path.join(this.dir, f), { force: true })
     this.crashes = 0
     if (restart && this.config?.enabled) this.start()
     else this.setStatus({ state: 'stopped' })

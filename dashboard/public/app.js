@@ -64,8 +64,8 @@ function ago(ts) {
 const ROLES = ['viewer', 'operator', 'admin']
 const ROLE_HELP = {
   viewer: 'See numbers, runners, status and logs',
-  operator: 'Viewer, plus add and edit numbers, link and re-pair them, and see activity',
-  admin: 'Operator, plus manage runners and users',
+  operator: 'Viewer, plus add and edit numbers, link and re-pair them, read and export conversations, and see activity',
+  admin: 'Operator, plus manage runners, users and Archestra (MCP) keys',
 }
 const me = { email: '', role: 'viewer' }
 const can = min => ROLES.indexOf(me.role) >= ROLES.indexOf(min)
@@ -197,6 +197,21 @@ function routeRow(r = {}, onRemove) {
   return row
 }
 
+function humanRow(a = {}) {
+  const row = h('div', { class: 'route human' },
+    field('Name', h('input', { name: 'a_name', value: a.name || '', required: true, placeholder: 'Budi' })),
+    field('WhatsApp number', h('input', { name: 'a_phone', value: a.phone || '', required: true, placeholder: '6281234567890', inputmode: 'numeric' })),
+    field('Topics', h('input', { name: 'a_topics', value: (a.topics || []).join(', '), placeholder: 'Any topic' }), 'Comma-separated, e.g. billing, refunds'),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'a_onDuty', checked: a.onDuty !== false }), 'On duty'),
+    h('button', { type: 'button', class: 'link danger', onclick: () => row.remove() }, 'Remove'))
+  return row
+}
+
+function readHuman(row) {
+  const v = name => row.querySelector(`[name=a_${name}]`)
+  return { name: v('name').value.trim(), phone: v('phone').value.trim(), topics: v('topics').value.split(',').map(t => t.trim()).filter(Boolean), onDuty: v('onDuty').checked }
+}
+
 function readRoute(row) {
   const v = name => row.querySelector(`[name=r_${name}]`).value.trim()
   const allowed = parseList(v('allowedNumbers'))
@@ -208,7 +223,8 @@ async function viewNumber(root, id) {
   const editable = can('operator')
   if (isNew && !editable) return fill(root, h('p', { class: 'error' }, 'Adding numbers needs the operator role.'))
   const [runners, number] = await Promise.all([api('GET', '/runners'), isNew ? null : api('GET', `/numbers/${id}`)])
-  const n = number || { name: '', runnerId: runners[0]?.id ?? null, enabled: true, agentId: '', allowedNumbers: [], routes: [], mediaTypes: null }
+  const n = number || { name: '', runnerId: runners[0]?.id ?? null, enabled: true, agentId: '', allowedNumbers: [], routes: [], mediaTypes: null,
+    recordMessages: true, handoffEnabled: false, handoffPauseMinutes: null, humanAgents: [] }
 
   // --- Live status, QR, pairing code, actions ---
   const statusBox = h('section', { class: 'card' })
@@ -261,6 +277,7 @@ async function viewNumber(root, id) {
   const media = new Set(n.mediaTypes || ['image', 'document'])
   const routesBox = h('div', { class: 'routes' }, ...(n.routes || []).map(r => routeRow(r)))
   const groupsBox = h('div', { class: 'groups' })
+  const humansBox = h('div', { class: 'routes' }, ...(n.humanAgents || []).map(a => humanRow(a)))
   const form = h('form', { class: 'card stack' },
     h('h2', {}, isNew ? 'New number' : 'Settings'),
     field('Name', h('input', { name: 'name', value: n.name, required: true, placeholder: 'Support line' })),
@@ -299,10 +316,19 @@ async function viewNumber(root, id) {
               h('button', { type: 'button', onclick: e => { routesBox.append(routeRow({ key: g.jid, name: g.subject })); e.target.replaceWith(h('small', { class: 'muted' }, 'added')) } }, 'Add'))))
       } }, 'Pick from groups')),
     groupsBox,
+    h('h3', {}, 'Conversations'),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'recordMessages', checked: n.recordMessages !== false }), 'Record messages'),
+    h('p', { class: 'muted' }, 'Stores every message in direct chats the bot answers and in routed groups, plus everything the bot sends. Operators can read and export them.'),
+    h('h3', {}, 'Human follow-up'),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'handoffEnabled', checked: n.handoffEnabled }), 'Let the agent ask a human to follow up'),
+    h('p', { class: 'muted' }, 'The agent calls the request_human_followup tool (see the Archestra page). The people below get a WhatsApp alert from this number, and the bot goes quiet in that chat.'),
+    field('Bot stays quiet for (minutes)', h('input', { name: 'handoffPauseMinutes', type: 'number', min: 0, max: 10080, value: n.handoffPauseMinutes ?? '', placeholder: '60' }), '0 keeps the bot answering.'),
+    humansBox,
+    h('div', { class: 'row' }, h('button', { type: 'button', onclick: () => humansBox.append(humanRow()) }, 'Add human agent')),
     h('div', { class: 'row actions' },
       h('button', { class: 'primary', type: 'submit' }, isNew ? 'Create' : 'Save'),
       !isNew && h('button', { type: 'button', class: 'danger', onclick: async () => {
-        if (!confirm(`Delete "${n.name}"? It will be logged out of WhatsApp and its session removed.`)) return
+        if (!confirm(`Delete "${n.name}"? It will be logged out of WhatsApp, and its session and recorded conversations removed.`)) return
         try {
           const r = await api('DELETE', `/numbers/${id}`)
           toast(r.unlinked ? 'Number deleted and logged out' : 'Number deleted (its runner was offline; unlink the device from the phone)')
@@ -327,6 +353,8 @@ async function viewNumber(root, id) {
       mediaTypes: [...form.querySelectorAll('[name=media]:checked')].map(i => i.value),
       maxMediaMb: num('maxMediaMb'), mediaInline: f.mediaInline.value || null, agentTimeoutMs: num('agentTimeoutMs'),
       routes: [...routesBox.querySelectorAll('.route')].map(readRoute),
+      recordMessages: f.recordMessages.checked, handoffEnabled: f.handoffEnabled.checked, handoffPauseMinutes: num('handoffPauseMinutes'),
+      humanAgents: [...humansBox.querySelectorAll('.human')].map(readHuman),
     }
     try {
       const saved = await api(isNew ? 'POST' : 'PUT', isNew ? '/numbers' : `/numbers/${id}`, body)
@@ -347,7 +375,11 @@ async function viewNumber(root, id) {
     h('a', { href: '#/', class: 'back' }, '← Numbers'),
     h('h1', {}, isNew ? 'Add number' : n.name),
     h('div', { class: 'columns' },
-      h('div', { class: 'stack' }, statusBox, !isNew && h('section', { class: 'card' }, h('h2', {}, 'Logs'), logBox)),
+      h('div', { class: 'stack' }, statusBox,
+        !isNew && can('operator') && h('a', { class: 'card number', href: `#/numbers/${id}/chats` },
+          h('div', { class: 'row between' }, h('strong', {}, 'Conversations'), h('span', {}, '→')),
+          h('span', { class: 'muted' }, 'Read recorded chats, see human follow-ups, and export them.')),
+        !isNew && h('section', { class: 'card' }, h('h2', {}, 'Logs'), logBox)),
       form))
 }
 
@@ -503,6 +535,219 @@ async function viewActivity(root) {
         h('td', { class: 'mono' }, r.target || ''), h('td', { class: 'mono' }, r.detail ? JSON.stringify(r.detail) : ''))))))
 }
 
+// ---------- Conversations ----------
+
+const chatPath = (id, jid) => `#/numbers/${id}/chats/${encodeURIComponent(jid)}`
+const chatTitle = c => c.name || (c.phone ? `+${c.phone}` : c.jid.split('@')[0])
+const KIND_LABEL = { user: '', ambient: 'not for the bot', agent: 'agent', system: 'bridge', human: 'sent from the phone', handoff: 'human alert' }
+const HANDOFF_STATUS = { open: ['Waiting for a human', 'warn'], failed: ['Nobody reached', 'bad'], resolved: ['Resolved', 'ok'] }
+
+// Start of the day for "from", end of the day for "to", in the browser's time zone
+const dayStart = v => new Date(`${v}T00:00:00`).getTime()
+const dayEnd = v => new Date(`${v}T23:59:59.999`).getTime()
+
+function exportBox(id, jid) {
+  const from = h('input', { type: 'date' })
+  const to = h('input', { type: 'date' })
+  const download = format => () => {
+    const q = new URLSearchParams({ format })
+    if (jid) q.set('jid', jid)
+    if (from.value) q.set('from', dayStart(from.value))
+    if (to.value) q.set('to', dayEnd(to.value))
+    location.href = `/api/numbers/${id}/export?${q}`
+  }
+  return h('section', { class: 'card' },
+    h('h2', {}, jid ? 'Export this chat' : 'Export conversations'),
+    h('div', { class: 'row wrap' }, field('From', from), field('To', to),
+      h('button', { type: 'button', onclick: download('csv') }, 'Download CSV'),
+      h('button', { type: 'button', onclick: download('jsonl') }, 'Download JSON Lines')),
+    h('p', { class: 'muted' }, 'Leave the dates empty to export everything. Exports are logged in Activity.'))
+}
+
+function handoffItem(id, x, { showChat = false } = {}) {
+  const [label, tone] = HANDOFF_STATUS[x.status] || [x.status, 'muted']
+  const alerted = x.notified.filter(p => p.ok).map(p => p.name)
+  const missed = x.notified.filter(p => !p.ok).map(p => `${p.name}${p.error ? ` (${p.error})` : ''}`)
+  const status = h('span', {}, pill({ label, tone }))
+  return h('div', { class: 'card stack tight' },
+    h('div', { class: 'row between wrap' },
+      h('div', {},
+        showChat && [h('a', { href: chatPath(id, x.jid) }, x.chatName || x.jid.split('@')[0]), ' · '],
+        h('span', { class: 'muted', title: new Date(x.at).toLocaleString() }, ago(x.at)),
+        x.urgency === 'urgent' && ' · urgent', x.topic && ` · ${x.topic}`),
+      status),
+    h('div', {}, h('strong', {}, 'Reason: '), x.reason),
+    x.summary && h('div', { class: 'muted' }, x.summary),
+    h('small', { class: 'muted' }, [alerted.length && `Alerted: ${alerted.join(', ')}`, missed.length && `Not reached: ${missed.join(', ')}`,
+      x.resolvedBy && `Resolved by ${x.resolvedBy} ${ago(x.resolvedAt)}`].filter(Boolean).join(' · ')),
+    x.status !== 'resolved' && h('div', {}, h('button', { type: 'button', onclick: async e => {
+      try {
+        await api('POST', `/numbers/${id}/handoffs/${x.id}/resolve`)
+        fill(status, pill({ label: 'Resolved', tone: 'ok' }))
+        e.target.remove()
+      } catch (err) { fail(err) }
+    } }, 'Mark resolved')))
+}
+
+async function viewChats(root, id) {
+  const n = await api('GET', `/numbers/${id}`)
+  const list = h('div', { class: 'stack' })
+  const handoffsBox = h('div', { class: 'stack' })
+  const more = h('div')
+  const search = h('input', { type: 'search', placeholder: 'Search by name, phone or group ID' })
+  const PAGE = 50
+  let chats = []
+
+  const chatCard = c => h('a', { class: 'card number', href: chatPath(id, c.jid) },
+    h('div', { class: 'row between' }, h('strong', {}, chatTitle(c)),
+      h('span', { class: 'row' },
+        c.openHandoffs > 0 && pill({ label: 'Human follow-up', tone: 'warn' }),
+        c.pausedUntil && pill({ label: 'Bot paused', tone: 'info' }),
+        c.isGroup && pill({ label: 'Group', tone: 'muted' }))),
+    c.lastText && h('div', { class: 'muted ellipsis' }, c.lastText),
+    h('div', { class: 'meta' }, h('span', {}, c.phone ? `+${c.phone}` : c.jid), h('span', {}, `${c.messages} messages · ${ago(c.lastAt)}`)))
+
+  const load = async ({ append = false } = {}) => {
+    const q = new URLSearchParams({ limit: PAGE })
+    if (search.value.trim()) q.set('q', search.value.trim())
+    if (append && chats.length) q.set('before', chats[chats.length - 1].lastAt)
+    const page = await api('GET', `/numbers/${id}/chats?${q}`)
+    chats = append ? [...chats, ...page] : page
+    fill(list, chats.length ? chats.map(chatCard)
+      : h('p', { class: 'muted' }, n.recordMessages ? 'No recorded chats yet.' : 'Recording is off for this number (Settings → Conversations).'))
+    fill(more, page.length === PAGE && h('button', { type: 'button', onclick: () => load({ append: true }).catch(fail) }, 'Older chats'))
+  }
+  const loadHandoffs = async () => {
+    const open = await api('GET', `/numbers/${id}/handoffs?status=open`)
+    fill(handoffsBox, open.length > 0 && [h('h2', {}, `Waiting for a human (${open.length})`), ...open.map(x => handoffItem(id, x, { showChat: true }))])
+  }
+  let searchTimer
+  search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => load().catch(fail), 300) })
+  // New messages: refresh at most every few seconds, and not while the operator is searching or paging
+  let refresh = null
+  onLive(msg => {
+    if (msg.type !== 'chat' || msg.numberId !== id || refresh) return
+    refresh = setTimeout(() => {
+      refresh = null
+      if (!search.value && chats.length <= PAGE) Promise.all([load(), loadHandoffs()]).catch(() => {})
+    }, 3000)
+  })
+
+  fill(root,
+    h('a', { href: `#/numbers/${id}`, class: 'back' }, `← ${n.name}`),
+    h('h1', {}, 'Conversations'),
+    h('div', { class: 'columns' },
+      h('div', { class: 'stack' }, search, list, more),
+      h('div', { class: 'stack' }, handoffsBox, exportBox(id))))
+  await Promise.all([load(), loadHandoffs()])
+}
+
+function bubble(m) {
+  const label = KIND_LABEL[m.kind]
+  const who = m.direction === 'in' ? (m.senderName || (m.sender ? `+${m.sender}` : 'User'))
+    : m.kind === 'human' ? 'Staff' : m.kind === 'agent' ? 'Bot' : 'Bridge'
+  return h('div', { class: `bubble ${m.direction} ${m.kind}` },
+    h('div', { class: 'meta' }, h('span', {}, who, label && h('small', {}, ` · ${label}`)), h('span', {}, new Date(m.at).toLocaleString())),
+    m.media && h('div', { class: 'muted' }, `📎 ${m.media.kind}${m.media.filename ? `: ${m.media.filename}` : ''}`),
+    m.text && h('div', { class: 'text' }, m.text))
+}
+
+async function viewChat(root, id, jid) {
+  const thread = h('div', { class: 'thread' })
+  const side = h('div', { class: 'stack' })
+  const title = h('h1', {})
+  let data
+
+  const control = async (action, body) => {
+    try {
+      const r = await api('POST', `/numbers/${id}/chats/${encodeURIComponent(jid)}/${action}`, body)
+      toast(r.pausedUntil ? `Bot paused until ${new Date(r.pausedUntil).toLocaleString()}` : 'The bot answers in this chat again')
+      await load()
+    } catch (e) { fail(e) }
+  }
+
+  const renderSide = () => {
+    const c = data.chat
+    const minutes = h('input', { type: 'number', min: 1, max: 10080, value: 60 })
+    fill(side,
+      h('section', { class: 'card stack tight' },
+        h('h2', {}, 'Bot'),
+        c.pausedUntil
+          ? [h('p', {}, `Paused until ${new Date(c.pausedUntil).toLocaleString()} so a person can answer.`),
+             h('div', {}, h('button', { class: 'primary', onclick: () => control('resume') }, 'Resume bot'))]
+          : [h('p', { class: 'muted' }, 'The bot answers in this chat. Pause it while a person takes over.'),
+             h('div', { class: 'row' }, minutes, h('span', { class: 'muted' }, 'min'),
+               h('button', { onclick: () => control('pause', { minutes: Number(minutes.value) }) }, 'Pause bot'))],
+        c.phone && h('p', {}, h('a', { href: `https://wa.me/${c.phone}`, target: '_blank', rel: 'noopener' }, `Open +${c.phone} in WhatsApp`))),
+      data.handoffs.length > 0 && [h('h2', {}, 'Human follow-ups'), ...data.handoffs.map(x => handoffItem(id, x))],
+      exportBox(id, jid))
+  }
+
+  const load = async () => {
+    data = await api('GET', `/numbers/${id}/chats/${encodeURIComponent(jid)}?limit=300`)
+    fill(thread, data.messages.length ? data.messages.map(bubble) : h('p', { class: 'muted' }, 'No messages.'))
+    title.textContent = chatTitle(data.chat)
+    renderSide()
+    thread.scrollTop = thread.scrollHeight
+  }
+  let refresh = null
+  onLive(msg => {
+    if (msg.type !== 'chat' || msg.numberId !== id || msg.jid !== jid || refresh) return
+    refresh = setTimeout(() => { refresh = null; load().catch(() => {}) }, 1500)
+  })
+
+  fill(root,
+    h('a', { href: `#/numbers/${id}/chats`, class: 'back' }, '← Conversations'),
+    title,
+    h('p', { class: 'muted mono' }, jid),
+    h('div', { class: 'columns' }, h('section', { class: 'card' }, thread), side))
+  await load()
+}
+
+// ---------- Archestra (MCP keys) ----------
+
+async function viewArchestra(root) {
+  const list = h('div', { class: 'stack' })
+  const notice = h('div')
+  const url = `${location.origin}/mcp`
+  const render = async () => {
+    const keys = await api('GET', '/mcp-keys')
+    fill(list, keys.length ? keys.map(k => h('div', { class: 'card row between' },
+      h('div', {}, h('strong', {}, k.name), h('div', { class: 'muted' }, `Created ${ago(k.createdAt)} · last used ${ago(k.lastUsedAt)}`)),
+      h('button', { class: 'danger', onclick: async () => {
+        if (!confirm(`Revoke "${k.name}"? Archestra can no longer call the handoff tool with it.`)) return
+        try { await api('DELETE', `/mcp-keys/${k.id}`); render() } catch (e) { fail(e) }
+      } }, 'Revoke'))) : h('p', { class: 'muted' }, 'No keys yet.'))
+  }
+  const name = h('input', { placeholder: 'e.g. archestra-prod', required: true })
+  const form = h('form', { class: 'row' }, name, h('button', { class: 'primary' }, 'Create key'))
+  form.addEventListener('submit', async e => {
+    e.preventDefault()
+    try {
+      const k = await api('POST', '/mcp-keys', { name: name.value })
+      name.value = ''
+      fill(notice, h('div', { class: 'card notice' },
+        h('h3', {}, 'MCP key (shown once)'),
+        h('p', {}, 'Copy it now. Only a hash is stored, so it can\'t be shown again.'),
+        h('code', { class: 'block' }, k.token),
+        h('p', { class: 'muted' }, 'In Archestra: MCP Registry → Add MCP Server → Remote, with:'),
+        h('code', { class: 'block' }, `URL: ${k.url}\nHeader: Authorization: Bearer ${k.token}`)))
+      render()
+    } catch (err) { fail(err) }
+  })
+  fill(root, h('h1', {}, 'Archestra'),
+    h('p', {}, 'This dashboard is also an MCP server. It gives Archestra agents a ', h('code', {}, 'request_human_followup'),
+      ' tool that alerts your human agents on WhatsApp and pauses the bot in that chat.'),
+    h('ol', { class: 'roles' },
+      h('li', {}, 'Create a key below.'),
+      h('li', {}, 'In Archestra, add a remote MCP server at ', h('code', {}, url), ' with the header ', h('code', {}, 'Authorization: Bearer <key>'), '.'),
+      h('li', {}, 'Assign its two tools to the agent (Tools & Knowledge).'),
+      h('li', {}, 'On each WhatsApp number, turn on "Let the agent ask a human to follow up" and add the human agents.'),
+      h('li', {}, 'Add to the agent\'s instructions: "When the user wants to talk to a person, or you can\'t help them, call request_human_followup with the chat_ref from the start of their message. Then tell them someone will contact them. Never show the chat_ref."')),
+    h('h2', {}, 'Keys'), form, notice, list)
+  await render()
+}
+
 // ---------- Router ----------
 
 async function route() {
@@ -510,11 +755,14 @@ async function route() {
   cleanup = () => {}
   const root = $('#view')
   const hash = location.hash.replace(/^#/, '') || '/'
-  const [, section, id] = hash.split('/')
+  const [, section, id, sub, subId] = hash.split('/')
   for (const a of document.querySelectorAll('[data-nav]')) a.classList.toggle('active', a.dataset.nav === (section || 'numbers'))
   const gate = (min, view) => can(min) ? view(root) : fill(root, h('p', { class: 'error' }, `This page needs the ${min} role.`))
   try {
-    if (section === 'numbers' && id) await viewNumber(root, id)
+    if (section === 'numbers' && id && sub === 'chats' && subId) await gate('operator', r => viewChat(r, id, decodeURIComponent(subId)))
+    else if (section === 'numbers' && id && sub === 'chats') await gate('operator', r => viewChats(r, id))
+    else if (section === 'numbers' && id) await viewNumber(root, id)
+    else if (section === 'archestra') await gate('admin', viewArchestra)
     else if (section === 'runners') await viewRunners(root)
     else if (section === 'users' || section === 'admins') await gate('admin', viewUsers)
     else if (section === 'activity') await gate('operator', viewActivity)

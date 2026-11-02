@@ -144,6 +144,11 @@ node src/runner.mjs   # or: docker compose --profile runner up -d runner, or Hel
 
 A runner starts one bridge process per number assigned to it, dials out to the dashboard (no open ports), and shows each number's QR code, status and logs there. Archestra tokens stay on the runner as env vars; the dashboard only stores their names. See [dashboard/README.md](dashboard/README.md) for setup.
 
+With the dashboard you also get:
+
+- **Conversation recording and export.** Every message the bot receives or sends is stored, and operators can read chats and download them as CSV or JSON Lines.
+- **Human follow-up.** The dashboard is an MCP server with a `request_human_followup` tool for your Archestra agent. When a user asks for a person, the agent calls it, the number's on-duty human agents get a WhatsApp alert with a summary and the recent messages, and the bot goes quiet in that chat while they take over.
+
 The single-number setup below keeps working unchanged.
 
 ## Docker Compose
