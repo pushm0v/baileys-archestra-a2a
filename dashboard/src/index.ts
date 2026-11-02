@@ -9,6 +9,8 @@ import { randomToken, sha256Hex } from './crypto'
 import { listNumbers, getNumber, saveNumber, audit } from './db'
 import { HUB_NAME } from './hub'
 import { parseNumber, parseEmail, parseName, ValidationError } from './validate'
+import { listChats, getChat, listMessages, exportStream, purgeOldMessages, type ExportFormat } from './conversations'
+import { handleMcp } from './mcp'
 
 export { Hub } from './hub'
 
@@ -117,6 +119,10 @@ function forwardToHub(req: Request, env: Env, identity: Record<string, string>):
   for (const [k, v] of Object.entries(identity)) headers.set(k, v)
   return hub(env).fetch(new Request(req.url, { headers }))
 }
+
+// ---------- MCP endpoint for Archestra (authenticated with an MCP key, not a session) ----------
+
+app.all('/mcp', c => handleMcp(c.req.raw, c.env))
 
 // ---------- API (signed-in users with a role) ----------
 
@@ -365,6 +371,135 @@ app.post('/api/numbers/:id/actions/:action', need('operator'), async c => {
   return c.json({ result })
 })
 
+// --- Conversations (operators: they hold customer messages) ---
+
+async function numberOr404(c: Context<App>) {
+  const n = await getNumber(c.env.DB, c.req.param('id')!)
+  if (!n) throw new HTTPException(404, { message: 'No such number' })
+  return n
+}
+
+// Accepts epoch milliseconds or anything Date.parse understands (e.g. 2026-11-02)
+function parseTime(v: string | undefined, what: string): number | undefined {
+  if (!v) return undefined
+  const t = /^\d+$/.test(v) ? Number(v) : Date.parse(v)
+  if (!Number.isFinite(t)) throw new ValidationError([`${what} must be a date or epoch milliseconds`])
+  return t
+}
+
+app.get('/api/numbers/:id/chats', need('operator'), async c => {
+  const n = await numberOr404(c)
+  return c.json(await listChats(c.env.DB, n.id, {
+    q: c.req.query('q')?.slice(0, 100) || undefined,
+    before: parseTime(c.req.query('before'), 'before'),
+    limit: Number(c.req.query('limit')) || 50,
+  }))
+})
+
+app.get('/api/numbers/:id/chats/:jid', need('operator'), async c => {
+  const n = await numberOr404(c)
+  const jid = c.req.param('jid')
+  const chat = await getChat(c.env.DB, n.id, jid)
+  if (!chat) return c.json({ error: 'No such chat' }, 404)
+  const [messages, handoffs] = await Promise.all([
+    listMessages(c.env.DB, n.id, jid, { before: parseTime(c.req.query('before'), 'before'), limit: Number(c.req.query('limit')) || 200 }),
+    c.env.DB.prepare('SELECT * FROM handoffs WHERE number_id = ? AND jid = ? ORDER BY at DESC LIMIT 20').bind(n.id, jid).all<HandoffRow>(),
+  ])
+  return c.json({ chat, messages, handoffs: handoffs.results.map(toHandoff) })
+})
+
+type HandoffRow = { id: string, number_id: string, jid: string, at: number, reason: string, summary: string | null, topic: string | null, urgency: string,
+  status: string, notified: string, requested_by: string | null, resolved_by: string | null, resolved_at: number | null, chat_name?: string | null }
+const toHandoff = (h: HandoffRow) => ({
+  id: h.id, jid: h.jid, at: h.at, reason: h.reason, summary: h.summary, topic: h.topic, urgency: h.urgency, status: h.status,
+  notified: JSON.parse(h.notified), requestedBy: h.requested_by, resolvedBy: h.resolved_by, resolvedAt: h.resolved_at,
+  ...(h.chat_name !== undefined && { chatName: h.chat_name }),
+})
+
+app.get('/api/numbers/:id/handoffs', need('operator'), async c => {
+  const n = await numberOr404(c)
+  const status = c.req.query('status')
+  const { results } = await c.env.DB.prepare(`SELECT h.*, c.name AS chat_name FROM handoffs h
+    LEFT JOIN chats c ON c.number_id = h.number_id AND c.jid = h.jid
+    WHERE h.number_id = ? ${status ? 'AND h.status = ?' : ''} ORDER BY h.at DESC LIMIT 100`).bind(...(status ? [n.id, status] : [n.id])).all<HandoffRow>()
+  return c.json(results.map(toHandoff))
+})
+
+// Pause the bot in a chat (a person takes over) or resume it. Resuming also closes open handoffs.
+app.post('/api/numbers/:id/chats/:jid/:action{pause|resume}', need('operator'), async c => {
+  const n = await numberOr404(c)
+  const jid = c.req.param('jid')
+  const action = c.req.param('action') as 'pause' | 'resume'
+  if (!await getChat(c.env.DB, n.id, jid)) return c.json({ error: 'No such chat' }, 404)
+  if (!n.runnerId) return c.json({ error: 'Assign this number to a runner first' }, 409)
+  const minutes = action === 'pause' ? Number((await c.req.json<{ minutes?: unknown }>().catch(() => ({} as { minutes?: unknown }))).minutes ?? 60) : 0
+  if (action === 'pause' && (!Number.isInteger(minutes) || minutes < 1 || minutes > 7 * 24 * 60)) throw new ValidationError(['minutes must be a whole number from 1 to 10080'])
+  const outcome = await hub(c.env).request(n.runnerId, n.id, action, { jid, minutes })
+  if (!outcome.ok) return c.json({ error: outcome.error }, outcome.offline ? 409 : 502)
+  const { pausedUntil = null } = JSON.parse(outcome.result) as { pausedUntil?: number | null }
+  const now = Date.now()
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE chats SET paused_until = ? WHERE number_id = ? AND jid = ?').bind(pausedUntil, n.id, jid),
+    ...(action === 'resume' ? [c.env.DB.prepare(`UPDATE handoffs SET status = 'resolved', resolved_by = ?, resolved_at = ?
+      WHERE number_id = ? AND jid = ? AND status = 'open'`).bind(who(c), now, n.id, jid)] : []),
+  ])
+  await audit(c.env.DB, who(c), `chat.${action}`, n.id, { chat: jid, ...(action === 'pause' && { minutes }) })
+  return c.json({ pausedUntil })
+})
+
+app.post('/api/numbers/:id/handoffs/:handoffId/resolve', need('operator'), async c => {
+  const n = await numberOr404(c)
+  const res = await c.env.DB.prepare(`UPDATE handoffs SET status = 'resolved', resolved_by = ?, resolved_at = ? WHERE id = ? AND number_id = ? AND status != 'resolved'`)
+    .bind(who(c), Date.now(), c.req.param('handoffId'), n.id).run()
+  if (!res.meta.changes) return c.json({ error: 'No such open handoff' }, 404)
+  await audit(c.env.DB, who(c), 'handoff.resolve', n.id, { handoff: c.req.param('handoffId') })
+  return c.json({ ok: true })
+})
+
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'chat'
+
+// Download recorded messages as JSON Lines or CSV, for one chat or the whole number
+app.get('/api/numbers/:id/export', need('operator'), async c => {
+  const n = await numberOr404(c)
+  const format = (c.req.query('format') || 'jsonl') as ExportFormat
+  if (format !== 'jsonl' && format !== 'csv') throw new ValidationError(['format must be jsonl or csv'])
+  const jid = c.req.query('jid') || undefined
+  const from = parseTime(c.req.query('from'), 'from')
+  const to = parseTime(c.req.query('to'), 'to')
+  await audit(c.env.DB, who(c), 'conversations.export', n.id, { format, ...(jid && { chat: jid }), ...(from && { from }), ...(to && { to }) })
+  const name = `whatsapp-${slug(n.name)}${jid ? `-${slug(jid.split('@')[0])}` : ''}-${new Date().toISOString().slice(0, 10)}.${format}`
+  return new Response(exportStream(c.env.DB, n.id, n.name, format, { jid, from, to }), {
+    headers: {
+      'Content-Type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/x-ndjson; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${name}"`,
+      'Cache-Control': 'no-store',
+    },
+  })
+})
+
+// --- MCP keys (admins): what Archestra uses to call /mcp ---
+
+app.get('/api/mcp-keys', need('admin'), async c => {
+  const { results } = await c.env.DB.prepare('SELECT id, name, created_at, last_used_at FROM mcp_keys ORDER BY name').all<{ id: string, name: string, created_at: number, last_used_at: number | null }>()
+  return c.json(results.map(k => ({ id: k.id, name: k.name, createdAt: k.created_at, lastUsedAt: k.last_used_at })))
+})
+
+app.post('/api/mcp-keys', need('admin'), async c => {
+  const name = parseName((await c.req.json<{ name?: unknown }>()).name, 'Key name')
+  const id = crypto.randomUUID()
+  const token = `mk_${randomToken(32)}`
+  await c.env.DB.prepare('INSERT INTO mcp_keys (id, name, token_hash, created_at) VALUES (?,?,?,?)').bind(id, name, await sha256Hex(token), Date.now()).run()
+  await audit(c.env.DB, who(c), 'mcp_key.add', id, { name })
+  return c.json({ id, name, token, url: `${new URL(c.req.url).origin}/mcp` }, 201)
+})
+
+app.delete('/api/mcp-keys/:id', need('admin'), async c => {
+  const res = await c.env.DB.prepare('DELETE FROM mcp_keys WHERE id = ?').bind(c.req.param('id')).run()
+  if (!res.meta.changes) return c.json({ error: 'No such key' }, 404)
+  await audit(c.env.DB, who(c), 'mcp_key.remove', c.req.param('id'))
+  return c.body(null, 204)
+})
+
 // --- Audit log ---
 
 app.get('/api/audit', need('operator'), async c => {
@@ -389,4 +524,13 @@ app.get('*', async c => {
   return c.env.ASSETS.fetch(c.req.raw)
 })
 
-export default app satisfies ExportedHandler<Env>
+export default {
+  fetch: app.fetch,
+  // Daily: delete recorded messages older than MESSAGE_RETENTION_DAYS (0 or empty keeps them)
+  async scheduled(_controller, env) {
+    const days = Number(env.MESSAGE_RETENTION_DAYS)
+    if (!Number.isFinite(days) || days <= 0) return
+    const deleted = await purgeOldMessages(env.DB, days)
+    console.log(JSON.stringify({ message: 'retention', days, deleted }))
+  },
+} satisfies ExportedHandler<Env>

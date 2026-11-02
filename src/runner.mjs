@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import QRCode from 'qrcode'
 import { Supervisor } from './runner/supervisor.mjs'
+import { Outbox } from './runner/outbox.mjs'
 import { reconnectDelay } from './backoff.mjs'
 
 const { DASHBOARD_URL, RUNNER_TOKEN, DATA_DIR = './data' } = process.env
@@ -29,7 +30,14 @@ const dataRoot = path.join(DATA_DIR, 'instances')
 const connectUrl = `${DASHBOARD_URL.replace(/\/$/, '').replace(/^http/, 'ws')}/runner/connect`
 
 let ws = null
-const send = msg => { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)) }
+const send = msg => {
+  if (ws?.readyState !== WebSocket.OPEN) return false
+  ws.send(JSON.stringify(msg))
+  return true
+}
+
+// Recorded messages, held until the dashboard confirms it stored them
+const outbox = new Outbox({ send })
 
 // Coalesce message activity so a busy chat doesn't flood the dashboard
 const activity = new Map()
@@ -53,6 +61,7 @@ async function onEvent(event) {
   }
   if (event.type === 'status') console.log(`[${name}] ${event.state}${event.detail ? `: ${event.detail}` : ''}`)
   if (event.type === 'activity') return sendActivity(event.numberId, event.at)
+  if (event.type === 'message') return outbox.push({ numberId: event.numberId, ...event.item })
   if (event.type === 'qr') {
     // Render here so the dashboard only shows an image; the raw pairing string never leaves the runner
     const svg = event.qr ? await QRCode.toString(event.qr, { type: 'svg', margin: 1 }) : null
@@ -74,6 +83,7 @@ async function onMessage(raw) {
   if (raw === 'pong') return
   let msg
   try { msg = JSON.parse(raw) } catch { return }
+  if (msg.type === 'messages_ack') return outbox.ack(msg.batch)
   if (msg.type === 'sync') {
     console.log(`dashboard sent settings for ${msg.numbers.length} number(s)`)
     await supervisor.sync(msg.numbers)
@@ -97,6 +107,7 @@ function connect() {
     attempt = 0
     console.log(`connected to dashboard ${DASHBOARD_URL}`)
     socket.send(JSON.stringify({ type: 'hello', version: VERSION, statuses: supervisor.statuses() }))
+    outbox.connected()
     // Plain "ping" text gets an automatic "pong" from the dashboard without waking it up
     pinger = setInterval(() => {
       if (Date.now() - lastSeen > DEAD_AFTER_MS) return socket.terminate()
@@ -114,6 +125,7 @@ function connect() {
   socket.on('close', () => {
     clearInterval(pinger)
     if (ws === socket) ws = null
+    outbox.disconnected()
     const delay = reconnectDelay(attempt++, { max: 60_000 })
     console.log(`dashboard connection closed, retrying in ${(delay / 1000).toFixed(1)}s (numbers keep running)`)
     setTimeout(connect, delay)

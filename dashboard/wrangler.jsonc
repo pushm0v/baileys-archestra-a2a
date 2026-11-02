@@ -14,8 +14,12 @@
     // ADMIN_EMAILS can always sign in.
     "ALLOWED_DOMAINS": "kitabisa.com",
     // OAuth client ID from Google Cloud Console > APIs & Services > Credentials (not secret)
-    "GOOGLE_CLIENT_ID": ""
+    "GOOGLE_CLIENT_ID": "",
+    // Recorded WhatsApp messages older than this many days are deleted every night. "0" keeps them forever.
+    "MESSAGE_RETENTION_DAYS": "0"
   },
+  // Runs the message retention cleanup once a day
+  "triggers": { "crons": ["17 3 * * *"] },
   // Set with `wrangler secret put NAME` (or in .dev.vars locally):
   //   GOOGLE_CLIENT_SECRET  OAuth client secret
   //   SESSION_SECRET        random string used to sign session cookies (e.g. openssl rand -base64 32)

@@ -132,3 +132,17 @@ select.role { width: auto; min-width: 120px; }
 .roles { margin: 0 0 16px; padding-left: 20px; }
 .roles li { margin: 2px 0; }
 #my-role:empty { display: none; }
+
+/* Conversations */
+.stack.tight { gap: 6px; }
+.ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread { display: flex; flex-direction: column; gap: 8px; max-height: 70vh; overflow-y: auto; }
+.bubble { max-width: 85%; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+.bubble.in { align-self: flex-start; }
+.bubble.out { align-self: flex-end; background: var(--ok-bg); border-color: transparent; }
+.bubble.ambient { opacity: 0.7; }
+.bubble.system, .bubble.handoff { background: var(--code-bg); }
+.bubble.human { background: var(--info-bg); }
+.bubble .meta { font-size: 0.75rem; }
+.bubble .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.route.human { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }

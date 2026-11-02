@@ -73,6 +73,9 @@ export class Supervisor {
       case 'unlinkAndStop': await inst.unlink({ restart: false }); return { ok: true }
       case 'pairingCode': return inst.request('pairingCode', args)
       case 'groups': return inst.request('groups')
+      case 'handoff': return inst.request('handoff', args)
+      case 'pause': return inst.request('pause', args)
+      case 'resume': return inst.request('resume', args)
       default: throw new Error(`unknown action ${action}`)
     }
   }
