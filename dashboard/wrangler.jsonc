@@ -19,7 +19,7 @@
     // Zitadel instance URL, e.g. "https://auth.example.com" (the issuer). Empty turns Zitadel off.
     "ZITADEL_ISSUER": "",
     // Client ID of the Zitadel web application (not secret)
-    "ZITADEL_CLIENT_ID": "",
+    "ZITADEL_CLIENT_ID": "397922761982347783",
     // Button text on the login page, e.g. "Kitabisa SSO"
     "ZITADEL_LABEL": "Zitadel",
     // Optional: let Zitadel project roles decide dashboard roles, e.g. "admin=wa-admin, operator=wa-operator, viewer=wa-viewer".
