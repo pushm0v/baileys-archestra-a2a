@@ -17,7 +17,7 @@
     // OAuth client ID from Google Cloud Console > APIs & Services > Credentials (not secret). Empty turns Google off.
     "GOOGLE_CLIENT_ID": "",
     // Zitadel instance URL, e.g. "https://auth.example.com" (the issuer). Empty turns Zitadel off.
-    "ZITADEL_ISSUER": "",
+    "ZITADEL_ISSUER": "https://zitadel.prod.kt.bs",
     // Client ID of the Zitadel web application (not secret)
     "ZITADEL_CLIENT_ID": "397922761982347783",
     // Button text on the login page, e.g. "Kitabisa SSO"
