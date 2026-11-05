@@ -302,6 +302,27 @@ describe('runners and numbers', () => {
     expect(audit.map(a => a.action)).toEqual(expect.arrayContaining(['runner.add', 'number.add', 'number.pairingCode', 'number.remove', 'runner.rotate']))
   })
 
+  it('pushes settings changes to a runner that reconnected, and saving never fails on its old connection', async () => {
+    const runner = await (await call('POST', '/api/runners', { body: { name: 'flaky' } })).json<{ id: string, token: string }>()
+    const first = await connectRunner(runner.token)
+    first.send({ type: 'hello', statuses: [] })
+    await first.next(m => m.type === 'sync')
+    const number = await (await call('POST', '/api/numbers', { body: { name: 'Allowlisted', runnerId: runner.id, agentId: 'a' } })).json<any>()
+    await first.next(m => m.type === 'sync' && m.numbers.length === 1)
+
+    // The runner reconnects; the hub replaces the old connection with the new one
+    const second = await connectRunner(runner.token)
+    second.send({ type: 'hello', statuses: [] })
+    await second.next(m => m.type === 'sync')
+
+    const saved = await call('PUT', `/api/numbers/${number.id}`, { body: { ...number, allowedNumbers: ['6281234567890'] } })
+    expect(saved.status).toBe(200)
+    const sync = await second.next(m => m.type === 'sync' && m.numbers[0]?.allowedNumbers?.length === 1)
+    expect(sync.numbers[0].allowedNumbers).toEqual(['6281234567890'])
+    const audit = await (await call('GET', '/api/audit')).json<any[]>()
+    expect(audit.some(a => a.action === 'number.update' && a.target === number.id)).toBe(true)
+  })
+
   it('returns 409 for commands when the runner is offline, and validates input', async () => {
     const runner = await (await call('POST', '/api/runners', { body: { name: 'offline' } })).json<{ id: string }>()
     const number = await (await call('POST', '/api/numbers', { body: { name: 'Sales', runnerId: runner.id, agentId: 'a' } })).json<{ id: string }>()
