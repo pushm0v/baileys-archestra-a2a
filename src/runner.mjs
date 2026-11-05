@@ -23,6 +23,9 @@ for (const [k, v] of Object.entries({ DASHBOARD_URL, RUNNER_TOKEN })) {
 
 const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 const PING_MS = 30_000
+// Ask for settings again now and then, so a settings push that got lost on a flaky
+// connection is picked up within minutes instead of at the next reconnect
+const RESYNC_MS = 5 * 60_000
 const DEAD_AFTER_MS = 90_000
 const ACTIVITY_THROTTLE_MS = 5_000
 
@@ -85,6 +88,9 @@ async function onMessage(raw) {
   try { msg = JSON.parse(raw) } catch { return }
   if (msg.type === 'messages_ack') return outbox.ack(msg.batch)
   if (msg.type === 'sync') {
+    const json = JSON.stringify(msg.numbers)
+    if (json === lastSettings) return // a periodic resync with nothing new
+    lastSettings = json
     console.log(`dashboard sent settings for ${msg.numbers.length} number(s)`)
     await supervisor.sync(msg.numbers)
   } else if (msg.type === 'request') {
@@ -97,17 +103,23 @@ async function onMessage(raw) {
 }
 
 let attempt = 0
+let lastSettings = null
+const hello = () => ({ type: 'hello', version: VERSION, statuses: supervisor.statuses() })
+
 function connect() {
   const socket = new WebSocket(connectUrl, { headers: { Authorization: `Bearer ${RUNNER_TOKEN}` } })
   ws = socket
   let lastSeen = Date.now()
   let pinger = null
+  let resync = null
 
   socket.on('open', () => {
     attempt = 0
     console.log(`connected to dashboard ${DASHBOARD_URL}`)
-    socket.send(JSON.stringify({ type: 'hello', version: VERSION, statuses: supervisor.statuses() }))
+    socket.send(JSON.stringify(hello()))
     outbox.connected()
+    // The dashboard answers every hello with the current settings
+    resync = setInterval(() => socket.send(JSON.stringify(hello())), RESYNC_MS)
     // Plain "ping" text gets an automatic "pong" from the dashboard without waking it up
     pinger = setInterval(() => {
       if (Date.now() - lastSeen > DEAD_AFTER_MS) return socket.terminate()
@@ -124,6 +136,7 @@ function connect() {
   socket.on('error', err => console.error('dashboard connection error:', err.message))
   socket.on('close', () => {
     clearInterval(pinger)
+    clearInterval(resync)
     if (ws === socket) ws = null
     outbox.disconnected()
     const delay = reconnectDelay(attempt++, { max: 60_000 })

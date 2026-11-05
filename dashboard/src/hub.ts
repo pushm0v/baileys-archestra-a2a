@@ -76,7 +76,9 @@ export class Hub extends DurableObject<Env> {
     if (kind === 'runner') {
       const runnerId = request.headers.get('X-Hub-Runner')!
       // A runner has one connection; a reconnect replaces the old one
-      for (const ws of this.ctx.getWebSockets(`runner:${runnerId}`)) ws.close(4000, 'replaced by a newer connection')
+      for (const ws of this.ctx.getWebSockets(`runner:${runnerId}`)) {
+        try { ws.close(4000, 'replaced by a newer connection') } catch { /* already closed */ }
+      }
       this.ctx.acceptWebSocket(server, [`runner:${runnerId}`])
       server.serializeAttachment({ kind: 'runner', runnerId } satisfies Attachment)
       await this.touchRunner(runnerId)
@@ -249,13 +251,23 @@ export class Hub extends DurableObject<Env> {
   }
 
   // Push current settings to a runner. Returns false when it is offline (it gets them on reconnect).
+  // Never throws: a connection that is closing (e.g. one replaced by a reconnect whose old TCP
+  // connection never finished closing) must not fail the settings change that called this.
   async syncRunner(runnerId: string): Promise<boolean> {
     this.owners = null
-    const sockets = this.ctx.getWebSockets(`runner:${runnerId}`)
+    const sockets = this.ctx.getWebSockets(`runner:${runnerId}`).filter(ws => ws.readyState === WebSocket.OPEN)
     if (!sockets.length) return false
     const data = JSON.stringify({ type: 'sync', numbers: await runnerPayload(this.env.DB, runnerId) })
-    for (const ws of sockets) ws.send(data)
-    return true
+    let sent = false
+    for (const ws of sockets) {
+      try {
+        ws.send(data)
+        sent = true
+      } catch (e) {
+        console.warn(JSON.stringify({ message: 'sync to runner failed', runnerId, error: e instanceof Error ? e.message : String(e) }))
+      }
+    }
+    return sent
   }
 
   // Send a command to a runner and wait for its answer. Never throws: failures come back as
