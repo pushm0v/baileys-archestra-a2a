@@ -11,6 +11,10 @@ import { createAgentClient, createContextStore } from './agent.mjs'
 import { loadRoutes, parseRoutes, botIds, isMentioned, stripMentions, userOf } from './routes.mjs'
 import { reconnectDelay } from './backoff.mjs'
 import { createChatRefs, createPauses, createSentIds, messageRecord, withChatRef } from './chatlog.mjs'
+import { quietSignalLogs } from './quiet-signal.mjs'
+
+// Before Baileys opens any session: libsignal would log private keys
+quietSignalLogs()
 
 const {
   ARCHESTRA_URL,
@@ -115,10 +119,12 @@ async function groupName(sock, jid) {
 const record = fields => { if (RECORD) report(messageRecord(fields)) }
 
 // Sends a text and records it. The ID is chosen up front so WhatsApp's echo of it is recognised.
+// No link preview: Baileys would fetch every URL in the text from the runner (agent replies
+// included), and it needs link-preview-js for that. WhatsApp still shows the links.
 async function sendText(sock, jid, text, { quoted, kind = 'system', chat } = {}) {
   const messageId = generateMessageIDV2(sock.user?.id)
   sentIds.add(messageId)
-  const sent = await sock.sendMessage(jid, { text }, { quoted, messageId })
+  const sent = await sock.sendMessage(jid, { text, linkPreview: null }, { quoted, messageId })
   record({ jid, direction: 'out', kind, text, waId: sent?.key?.id ?? messageId, chat })
   return sent
 }
